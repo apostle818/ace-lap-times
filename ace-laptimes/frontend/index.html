@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ACE Lap Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-card: #1a1a26;
+  --bg-card-hover: #22222f;
+  --bg-input: #14141e;
+  --border: #2a2a3a;
+  --border-focus: #e63946;
+  --text-primary: #eaeaf0;
+  --text-secondary: #8888a0;
+  --text-muted: #55556a;
+  --accent: #e63946;
+  --accent-glow: rgba(230, 57, 70, 0.3);
+  --accent-soft: rgba(230, 57, 70, 0.12);
+  --green: #2ec866;
+  --green-soft: rgba(46, 200, 102, 0.12);
+  --yellow: #f4a623;
+  --yellow-soft: rgba(244, 166, 35, 0.12);
+  --blue: #4a9eff;
+  --blue-soft: rgba(74, 158, 255, 0.12);
+  --purple: #a855f7;
+  --purple-soft: rgba(168, 85, 247, 0.12);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-lg: 16px;
+  --shadow: 0 2px 12px rgba(0,0,0,0.4);
+  --font: 'Outfit', sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.app-shell { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 240px; background: var(--bg-secondary); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; position: fixed;
+  top: 0; left: 0; bottom: 0; z-index: 100; transition: transform 0.3s ease;
+}
+
+.main-content { flex: 1; margin-left: 240px; padding: 32px 40px; max-width: 1200px; }
+
+.logo-area { padding: 24px 20px 20px; border-bottom: 1px solid var(--border); }
+.logo-area h1 {
+  font-size: 18px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase;
+  background: linear-gradient(135deg, var(--accent), #ff6b6b);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+}
+.logo-area .subtitle { font-size: 11px; color: var(--text-muted); letter-spacing: 1px; margin-top: 4px; }
+
+.nav-section { padding: 16px 12px; flex: 1; overflow-y: auto; }
+.nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); padding: 0 8px; margin-bottom: 8px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: var(--radius-sm); cursor: pointer; font-size: 14px; font-weight: 500;
+  color: var(--text-secondary); transition: all 0.15s ease; margin-bottom: 2px;
+}
+.nav-item:hover { background: var(--bg-card); color: var(--text-primary); }
+.nav-item.active { background: var(--accent-soft); color: var(--accent); }
+.nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+
+.user-area { padding: 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.user-avatar {
+  width: 32px; height: 32px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0;
+}
+.user-info { flex: 1; min-width: 0; }
+.user-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.user-logout { font-size: 11px; color: var(--text-muted); cursor: pointer; transition: color 0.15s; margin-top: 2px; }
+.user-logout:hover { color: var(--accent); }
+
+.role-badge {
+  display: inline-flex; align-items: center; font-size: 9px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.8px; padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+}
+.role-badge.superadmin { background: var(--purple-soft); color: var(--purple); }
+.role-badge.group-admin { background: var(--blue-soft); color: var(--blue); }
+.role-badge.member { background: rgba(85,85,106,0.2); color: var(--text-muted); }
+
+.page-header { margin-bottom: 28px; }
+.page-header h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+.page-header p { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
+
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.card-title { font-size: 15px; font-weight: 700; letter-spacing: -0.2px; }
+
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.form-group { display: flex; flex-direction: column; gap: 5px; }
+.form-group label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-secondary); }
+.form-group input, .form-group select, .form-group textarea {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  color: var(--text-primary); font-family: var(--font); font-size: 14px; padding: 10px 12px; outline: none; transition: border-color 0.15s;
+}
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.form-group input:disabled { opacity: 0.5; cursor: not-allowed; }
+.form-group select { cursor: pointer; }
+.form-group select option { background: var(--bg-card); }
+.form-group textarea { resize: vertical; min-height: 80px; }
+
+.laptime-inputs { display: flex; gap: 6px; align-items: center; }
+.laptime-inputs input { width: 65px; text-align: center; font-family: var(--mono); font-size: 15px; font-weight: 600; }
+.laptime-sep { color: var(--text-muted); font-family: var(--mono); font-weight: 700; font-size: 18px; }
+
+.btn {
+  padding: 10px 20px; border-radius: var(--radius-sm); border: none; cursor: pointer;
+  font-family: var(--font); font-size: 13px; font-weight: 600; transition: all 0.15s ease;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: #d42f3c; box-shadow: 0 4px 16px var(--accent-glow); }
+.btn-secondary { background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+.btn-ghost { background: transparent; color: var(--text-secondary); padding: 6px 10px; }
+.btn-ghost:hover { color: var(--accent); }
+.btn-danger { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(230,57,70,0.3); }
+.btn-danger:hover { background: var(--accent); color: white; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-muted); padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+.data-table td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid rgba(42,42,58,0.5); vertical-align: middle; }
+.data-table tr:hover td { background: rgba(255,255,255,0.02); }
+.laptime-cell { font-family: var(--mono); font-weight: 600; font-size: 14px; letter-spacing: 0.5px; }
+.pb-badge { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; background: var(--green-soft); color: var(--green); }
+.weather-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; border-radius: 4px; background: var(--bg-input); color: var(--text-secondary); }
+.driver-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; }
+.driver-dot { width: 8px; height: 8px; border-radius: 50%; }
+.delete-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; border-radius: 4px; transition: all 0.15s; font-size: 16px; }
+.delete-btn:hover { color: var(--accent); background: var(--accent-soft); }
+
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 24px; }
+.stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; }
+.stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 6px; }
+.stat-value { font-family: var(--mono); font-size: 22px; font-weight: 700; }
+.stat-value.accent { color: var(--accent); }
+.stat-value.green { color: var(--green); }
+.stat-value.blue { color: var(--blue); }
+
+.filter-bar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; align-items: center; }
+.filter-bar select, .filter-bar input { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font); font-size: 13px; padding: 8px 12px; outline: none; }
+.filter-bar select option { background: var(--bg-card); }
+
+.lb-position { font-family: var(--mono); font-weight: 800; font-size: 16px; width: 32px; text-align: center; }
+.lb-position.gold { color: #ffd700; }
+.lb-position.silver { color: #c0c0c0; }
+.lb-position.bronze { color: #cd7f32; }
+.lb-diff { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+
+.login-wrapper { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg-primary); position: relative; overflow: hidden; }
+.login-wrapper::before {
+  content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+  background: radial-gradient(circle at 30% 40%, var(--accent-glow) 0%, transparent 50%), radial-gradient(circle at 70% 60%, rgba(74,158,255,0.08) 0%, transparent 50%);
+  animation: loginGlow 8s ease-in-out infinite alternate;
+}
+@keyframes loginGlow { 0% { transform: translate(0,0); } 100% { transform: translate(-3%,-3%); } }
+.login-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 40px; width: 380px; position: relative; box-shadow: var(--shadow); }
+.login-box h1 { font-size: 24px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; text-align: center; background: linear-gradient(135deg, var(--accent), #ff6b6b); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 4px; }
+.login-box .login-sub { text-align: center; font-size: 12px; color: var(--text-muted); margin-bottom: 28px; letter-spacing: 0.5px; }
+.login-box .form-group { margin-bottom: 16px; }
+.login-box .form-group input { width: 100%; }
+.login-box .btn-primary { width: 100%; justify-content: center; padding: 12px; font-size: 14px; margin-top: 8px; }
+.login-toggle { text-align: center; margin-top: 16px; font-size: 13px; color: var(--text-secondary); }
+.login-toggle a { color: var(--accent); cursor: pointer; text-decoration: none; font-weight: 600; }
+
+.error-msg { background: var(--accent-soft); color: var(--accent); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 16px; }
+.success-msg { background: var(--green-soft); color: var(--green); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 13px; margin-bottom: 16px; }
+
+.chart-container { position: relative; height: 300px; }
+
+.empty-state { text-align: center; padding: 48px 20px; color: var(--text-muted); }
+.empty-state svg { margin-bottom: 16px; opacity: 0.3; }
+.empty-state h3 { font-size: 16px; color: var(--text-secondary); margin-bottom: 6px; }
+.empty-state p { font-size: 13px; }
+
+.group-card { display: flex; align-items: center; gap: 16px; padding: 16px 20px; margin-bottom: 12px; }
+.group-card-info { flex: 1; }
+.group-card-name { font-weight: 700; font-size: 15px; }
+.group-card-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
+.group-card-desc { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+.group-card-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+.inline-select { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font); font-size: 12px; padding: 4px 8px; outline: none; cursor: pointer; }
+.inline-select option { background: var(--bg-card); }
+
+.pagination { display: flex; align-items: center; gap: 8px; justify-content: center; padding-top: 16px; }
+.pagination-info { font-size: 12px; color: var(--text-muted); }
+
+.invite-banner { background: var(--blue-soft); border: 1px solid rgba(74,158,255,0.3); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--blue); }
+
+.mobile-toggle { display: none; position: fixed; top: 12px; left: 12px; z-index: 200; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); padding: 8px; cursor: pointer; }
+
+@media (max-width: 768px) {
+  .mobile-toggle { display: block; }
+  .sidebar { transform: translateX(-100%); }
+  .sidebar.open { transform: translateX(0); }
+  .main-content { margin-left: 0; padding: 20px 16px; padding-top: 56px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .stats-row { grid-template-columns: 1fr 1fr; }
+  .data-table { font-size: 12px; }
+  .data-table th, .data-table td { padding: 8px 8px; }
+}
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fadeIn 0.3s ease forwards; }
+.table-scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+// ─── State ──────────────────────────────────────────────────────────
+const state = {
+  token: localStorage.getItem('ace_token'),
+  user: JSON.parse(localStorage.getItem('ace_user') || 'null'),
+  page: 'record',
+  laptimes: [], tracks: [], cars: [], users: [],
+  leaderboard: [], personalBests: [], progress: [],
+  filters: { track: '', car: '', user_id: '' },
+  sidebarOpen: false,
+  // Phase 3a
+  adminUsers: [], groups: [], selectedGroupId: null, groupDetail: null,
+  // Phase 3b
+  profileData: null,
+  groupMembersPage: 1,
+  pendingInvite: null,
+  inviteInfo: null,
+};
+
+const GROUP_MEMBERS_PAGE_SIZE = 10;
+const WEATHER_OPTIONS = ['Clear', 'Cloudy', 'Light Rain', 'Heavy Rain', 'Fog', 'Snow', 'Storm', 'Dynamic'];
+const WEATHER_ICONS = { 'Clear':'☀️','Cloudy':'☁️','Light Rain':'🌦️','Heavy Rain':'🌧️','Fog':'🌫️','Snow':'❄️','Storm':'⛈️','Dynamic':'🔄' };
+const DRIVER_COLORS = ['#e63946','#4a9eff','#2ec866','#f4a623','#a855f7','#ff6b9d','#06d6a0','#ffd166'];
+
+// ─── API ────────────────────────────────────────────────────────────
+const API = '/api';
+
+async function apiFetch(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
+  const res = await fetch(`${API}${path}`, { ...options, headers: { ...headers, ...options.headers } });
+  if (res.status === 401) { logout(); return null; }
+  return res;
+}
+
+function logout() {
+  state.token = null; state.user = null;
+  localStorage.removeItem('ace_token'); localStorage.removeItem('ace_user');
+  render();
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────
+function msToLaptime(ms) {
+  const m = Math.floor(ms / 60000), s = Math.floor((ms % 60000) / 1000), mil = ms % 1000;
+  return `${m}:${String(s).padStart(2,'0')}.${String(mil).padStart(3,'0')}`;
+}
+function laptimeToMs(min, sec, mil) { return (parseInt(min)||0)*60000+(parseInt(sec)||0)*1000+(parseInt(mil)||0); }
+function getDriverColor(idx) { return DRIVER_COLORS[idx % DRIVER_COLORS.length]; }
+function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+
+function userRole() { return state.user?.role || 'member'; }
+function isGroupAdmin() { return (state.user?.groups || []).some(g => g.group_role === 'group_admin'); }
+
+function roleBadgeHtml(role) {
+  const cls = role === 'superadmin' ? 'superadmin' : role === 'group_admin' ? 'group-admin' : 'member';
+  const label = role === 'superadmin' ? 'Superadmin' : role === 'group_admin' ? 'Group Admin' : 'Member';
+  return `<span class="role-badge ${cls}">${label}</span>`;
+}
+
+function clearInvite() {
+  state.pendingInvite = null; state.inviteInfo = null;
+  history.replaceState({}, '', window.location.pathname);
+}
+
+// ─── Data loading ───────────────────────────────────────────────────
+async function loadMeta() {
+  const [tr, cr, ur] = await Promise.all([apiFetch('/meta/tracks'), apiFetch('/meta/cars'), apiFetch('/meta/users')]);
+  if (tr) state.tracks = await tr.json();
+  if (cr) state.cars = await cr.json();
+  if (ur) state.users = await ur.json();
+}
+async function loadLaptimes() {
+  const p = new URLSearchParams();
+  if (state.filters.track) p.set('track', state.filters.track);
+  if (state.filters.car) p.set('car', state.filters.car);
+  if (state.filters.user_id) p.set('user_id', state.filters.user_id);
+  const res = await apiFetch(`/laptimes?${p}`);
+  if (res) state.laptimes = await res.json();
+}
+async function loadLeaderboard() {
+  const p = new URLSearchParams();
+  if (state.filters.track) p.set('track', state.filters.track);
+  if (state.filters.car) p.set('car', state.filters.car);
+  const res = await apiFetch(`/leaderboard?${p}`);
+  if (res) state.leaderboard = await res.json();
+}
+async function loadPersonalBests() {
+  const uid = state.filters.user_id || '';
+  const res = await apiFetch(`/personal-bests${uid ? `?user_id=${uid}` : ''}`);
+  if (res) state.personalBests = await res.json();
+}
+async function loadProgress() {
+  if (!state.filters.track || !state.filters.car) { state.progress = []; return; }
+  const p = new URLSearchParams();
+  p.set('track', state.filters.track); p.set('car', state.filters.car);
+  if (state.filters.user_id) p.set('user_id', state.filters.user_id);
+  const res = await apiFetch(`/progress?${p}`);
+  if (res) state.progress = await res.json();
+}
+async function loadAdminUsers() {
+  const res = await apiFetch('/admin/users');
+  if (res && res.ok) state.adminUsers = await res.json();
+}
+async function loadGroups() {
+  const res = await apiFetch('/groups');
+  if (res && res.ok) state.groups = await res.json();
+}
+async function loadGroupDetail(id) {
+  const res = await apiFetch(`/groups/${id}`);
+  if (res && res.ok) { state.groupDetail = await res.json(); state.selectedGroupId = id; state.groupMembersPage = 1; }
+}
+async function loadMyProfile() {
+  const res = await apiFetch(`/users/${state.user?.id}`);
+  if (res && res.ok) state.profileData = await res.json();
+}
+async function loadCurrentUser() {
+  const res = await apiFetch('/auth/me');
+  if (res && res.ok) {
+    const data = await res.json();
+    state.user = { ...state.user, ...data };
+    localStorage.setItem('ace_user', JSON.stringify(state.user));
+  }
+}
+async function loadPageData() {
+  await loadMeta();
+  if (state.page === 'record' || state.page === 'history') await loadLaptimes();
+  if (state.page === 'leaderboard') await loadLeaderboard();
+  if (state.page === 'personal-bests') await loadPersonalBests();
+  if (state.page === 'progress') await loadProgress();
+  if (state.page === 'admin') await loadAdminUsers();
+  if (state.page === 'groups') await loadGroups();
+  if (state.page === 'my-profile') await loadMyProfile();
+}
+
+// ─── Render ─────────────────────────────────────────────────────────
+function render() {
+  const app = document.getElementById('app');
+  if (!state.token) {
+    app.innerHTML = renderLogin();
+    bindLoginEvents();
+  } else if (state.pendingInvite && state.inviteInfo !== undefined) {
+    app.innerHTML = renderInvitePage();
+    bindInviteEvents();
+  } else {
+    app.innerHTML = renderApp();
+    bindAppEvents();
+    loadPageData().then(() => { renderPageContent(); });
+  }
+}
+
+// ─── Login ──────────────────────────────────────────────────────────
+let isRegister = false;
+
+function renderLogin() {
+  return `
+    <div class="login-wrapper">
+      <div class="login-box fade-in">
+        <h1>ACE Laps</h1>
+        <p class="login-sub">Assetto Corsa Evo Lap Tracker</p>
+        ${state.inviteInfo ? `
+          <div class="invite-banner">
+            You've been invited to join <strong>${escapeHtml(state.inviteInfo.group_name)}</strong>.
+            Sign in or register to join.
+          </div>` : ''}
+        <div id="login-error"></div>
+        ${isRegister ? `<div class="form-group"><label>Display Name</label><input type="text" id="reg-display" placeholder="e.g. Geoffry" autocomplete="off"></div>` : ''}
+        <div class="form-group"><label>Username</label><input type="text" id="auth-user" placeholder="Username" autocomplete="off"></div>
+        <div class="form-group"><label>Password</label><input type="password" id="auth-pass" placeholder="Password"></div>
+        <button class="btn btn-primary" id="auth-submit">${isRegister ? 'Create Account' : 'Sign In'}</button>
+        <div class="login-toggle">
+          ${isRegister ? 'Already have an account? <a id="toggle-auth">Sign in</a>' : 'No account yet? <a id="toggle-auth">Create one</a>'}
+        </div>
+      </div>
+    </div>`;
+}
+
+function bindLoginEvents() {
+  document.getElementById('auth-submit')?.addEventListener('click', handleAuth);
+  document.getElementById('auth-pass')?.addEventListener('keydown', e => { if(e.key==='Enter') handleAuth(); });
+  document.getElementById('toggle-auth')?.addEventListener('click', () => { isRegister = !isRegister; render(); });
+}
+
+async function handleAuth() {
+  const username = document.getElementById('auth-user').value.trim();
+  const password = document.getElementById('auth-pass').value;
+  const errDiv = document.getElementById('login-error');
+  if (!username || !password) { errDiv.innerHTML = '<div class="error-msg">Fill in all fields</div>'; return; }
+  const endpoint = isRegister ? '/auth/register' : '/auth/login';
+  const body = { username, password };
+  if (isRegister) body.display_name = document.getElementById('reg-display')?.value.trim() || username;
+  try {
+    const res = await fetch(`${API}${endpoint}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) { errDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`; return; }
+    state.token = data.token; state.user = data.user;
+    localStorage.setItem('ace_token', data.token); localStorage.setItem('ace_user', JSON.stringify(data.user));
+    render();
+  } catch { errDiv.innerHTML = '<div class="error-msg">Connection failed. Is the server running?</div>'; }
+}
+
+// ─── Invite page ─────────────────────────────────────────────────────
+function renderInvitePage() {
+  if (!state.inviteInfo) {
+    return `
+      <div class="login-wrapper">
+        <div class="login-box fade-in">
+          <h1>ACE Laps</h1>
+          <div class="error-msg" style="margin-top: 20px;">Invalid or expired invite link.</div>
+          <button class="btn btn-secondary" id="skip-invite-btn" style="width:100%;justify-content:center;margin-top:16px;">Go to App</button>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="login-wrapper">
+      <div class="login-box fade-in">
+        <h1>ACE Laps</h1>
+        <p class="login-sub">You've been invited to join a group</p>
+        <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:20px;text-align:center;margin:20px 0;">
+          <div style="font-size:20px;font-weight:800;">${escapeHtml(state.inviteInfo.group_name)}</div>
+          <div style="color:var(--text-muted);font-size:12px;margin-top:6px;">${state.inviteInfo.member_count} member${state.inviteInfo.member_count!==1?'s':''}</div>
+        </div>
+        <div id="invite-msg"></div>
+        <button class="btn btn-primary" id="join-group-btn" style="width:100%;justify-content:center;padding:12px;">Join Group</button>
+        <button class="btn btn-ghost" id="skip-invite-btn" style="width:100%;justify-content:center;margin-top:8px;color:var(--text-muted);">Skip for now</button>
+      </div>
+    </div>`;
+}
+
+function bindInviteEvents() {
+  document.getElementById('join-group-btn')?.addEventListener('click', async () => {
+    const msgDiv = document.getElementById('invite-msg');
+    const res = await apiFetch(`/invites/${state.pendingInvite}/join`, { method: 'POST' });
+    if (!res) return;
+    const data = await res.json();
+    if (res.ok || data.error === 'Already a member') {
+      await loadCurrentUser();
+      clearInvite();
+      state.page = 'groups';
+      render();
+    } else {
+      msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`;
+    }
+  });
+  document.getElementById('skip-invite-btn')?.addEventListener('click', () => { clearInvite(); render(); });
+}
+
+// ─── App shell ──────────────────────────────────────────────────────
+function renderApp() {
+  const role = userRole();
+  const groupAdmin = isGroupAdmin();
+  const pages = [
+    { id: 'record', label: 'Record Lap', icon: svgIcon('plus') },
+    { id: 'history', label: 'Lap History', icon: svgIcon('clock') },
+    { id: 'leaderboard', label: 'Leaderboard', icon: svgIcon('trophy') },
+    { id: 'personal-bests', label: 'Personal Bests', icon: svgIcon('star') },
+    { id: 'progress', label: 'Progress', icon: svgIcon('chart') },
+    { id: 'export', label: 'Export', icon: svgIcon('download') },
+    { id: 'my-profile', label: 'My Profile', icon: svgIcon('user') },
+  ];
+  const mgmtPages = [];
+  if (role === 'superadmin' || groupAdmin) mgmtPages.push({ id: 'groups', label: 'Groups', icon: svgIcon('users') });
+  if (role === 'superadmin') mgmtPages.push({ id: 'admin', label: 'Admin Panel', icon: svgIcon('shield') });
+  const initial = state.user?.display_name?.charAt(0)?.toUpperCase() || '?';
+  const userRoleBadge = role !== 'member' ? roleBadgeHtml(role) : '';
+  return `
+    <button class="mobile-toggle" id="mobile-toggle">${svgIcon('menu')}</button>
+    <div class="app-shell">
+      <aside class="sidebar${state.sidebarOpen?' open':''}" id="sidebar">
+        <div class="logo-area"><h1>ACE Laps</h1><div class="subtitle">Assetto Corsa Evo</div></div>
+        <nav class="nav-section">
+          <div class="nav-label">Menu</div>
+          ${pages.map(p => `<div class="nav-item${state.page===p.id?' active':''}" data-page="${p.id}">${p.icon} ${p.label}</div>`).join('')}
+          ${mgmtPages.length > 0 ? `
+            <div class="nav-label" style="margin-top:16px;">Management</div>
+            ${mgmtPages.map(p => `<div class="nav-item${state.page===p.id?' active':''}" data-page="${p.id}">${p.icon} ${p.label}</div>`).join('')}
+          ` : ''}
+        </nav>
+        <div class="user-area">
+          <div class="user-avatar">${initial}</div>
+          <div class="user-info">
+            <div class="user-name">${escapeHtml(state.user?.display_name||'')} ${userRoleBadge}</div>
+            <div class="user-logout" id="logout-btn">Sign out</div>
+          </div>
+        </div>
+      </aside>
+      <main class="main-content"><div id="page-content"></div></main>
+    </div>`;
+}
+
+function bindAppEvents() {
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.addEventListener('click', () => {
+      state.page = el.dataset.page; state.sidebarOpen = false;
+      state.selectedGroupId = null; state.groupDetail = null; state.groupMembersPage = 1;
+      render();
+    });
+  });
+  document.getElementById('logout-btn')?.addEventListener('click', logout);
+  document.getElementById('mobile-toggle')?.addEventListener('click', () => {
+    state.sidebarOpen = !state.sidebarOpen;
+    document.getElementById('sidebar')?.classList.toggle('open', state.sidebarOpen);
+  });
+}
+
+// ─── Page content ───────────────────────────────────────────────────
+function renderPageContent() {
+  const el = document.getElementById('page-content');
+  if (!el) return;
+  switch (state.page) {
+    case 'record':         el.innerHTML = renderRecordPage(); break;
+    case 'history':        el.innerHTML = renderHistoryPage(); break;
+    case 'leaderboard':    el.innerHTML = renderLeaderboardPage(); break;
+    case 'personal-bests': el.innerHTML = renderPBPage(); break;
+    case 'progress':       el.innerHTML = renderProgressPage(); break;
+    case 'export':         el.innerHTML = renderExportPage(); break;
+    case 'admin':          el.innerHTML = renderAdminPage(); break;
+    case 'groups':         el.innerHTML = renderGroupsPage(); break;
+    case 'my-profile':     el.innerHTML = renderProfilePage(); break;
+  }
+  bindPageEvents();
+}
+
+function bindPageEvents() {
+  // Record
+  document.getElementById('record-form-btn')?.addEventListener('click', handleRecord);
+  document.querySelectorAll('.delete-lap').forEach(el => {
+    el.addEventListener('click', async () => {
+      if (!confirm('Delete this lap?')) return;
+      await apiFetch(`/laptimes/${el.dataset.id}`, { method: 'DELETE' });
+      await loadLaptimes(); renderPageContent();
+    });
+  });
+  document.querySelectorAll('.filter-select').forEach(el => {
+    el.addEventListener('change', () => {
+      state.filters[el.dataset.filter] = el.value;
+      loadPageData().then(() => renderPageContent());
+    });
+  });
+  document.getElementById('export-csv')?.addEventListener('click', () => window.open(`${API}/export/csv`,'_blank'));
+  document.getElementById('export-json')?.addEventListener('click', () => window.open(`${API}/export/json`,'_blank'));
+  if (state.page === 'progress' && state.progress.length > 0) renderProgressChart();
+
+  // Profile
+  document.getElementById('profile-save-btn')?.addEventListener('click', async () => {
+    const display_name = document.getElementById('prof-display').value.trim();
+    const bio = document.getElementById('prof-bio').value.trim();
+    const msgDiv = document.getElementById('profile-msg');
+    if (!display_name) { msgDiv.innerHTML = '<div class="error-msg">Display name required</div>'; return; }
+    const res = await apiFetch('/auth/profile', { method: 'PUT', body: JSON.stringify({ display_name, bio }) });
+    if (!res) return;
+    if (res.ok) {
+      state.user = { ...state.user, display_name, bio };
+      localStorage.setItem('ace_user', JSON.stringify(state.user));
+      if (state.profileData) { state.profileData.display_name = display_name; state.profileData.bio = bio; }
+      msgDiv.innerHTML = '<div class="success-msg">Profile updated</div>';
+      document.getElementById('app').innerHTML = renderApp(); bindAppEvents();
+      renderPageContent(); bindPageEvents();
+    } else {
+      const d = await res.json(); msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(d.error)}</div>`;
+    }
+  });
+
+  // Admin
+  document.querySelectorAll('.admin-role-save').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const uid = parseInt(btn.dataset.uid);
+      const role = document.querySelector(`.admin-role-select[data-uid="${uid}"]`).value;
+      const res = await apiFetch(`/admin/users/${uid}`, { method: 'PUT', body: JSON.stringify({ role }) });
+      if (res && res.ok) { await loadAdminUsers(); renderPageContent(); }
+    });
+  });
+  document.querySelectorAll('.admin-delete-user').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this user and all their laps?')) return;
+      const res = await apiFetch(`/admin/users/${btn.dataset.uid}`, { method: 'DELETE' });
+      if (res && res.ok) { await loadAdminUsers(); renderPageContent(); }
+    });
+  });
+
+  // Groups list
+  document.getElementById('create-group-btn')?.addEventListener('click', () => {
+    const f = document.getElementById('create-group-form');
+    if (f) f.style.display = f.style.display === 'none' ? 'block' : 'none';
+  });
+  document.getElementById('create-group-cancel')?.addEventListener('click', () => {
+    document.getElementById('create-group-form').style.display = 'none';
+  });
+  document.getElementById('create-group-submit')?.addEventListener('click', async () => {
+    const name = document.getElementById('new-group-name').value.trim();
+    const description = document.getElementById('new-group-desc').value.trim();
+    const msgDiv = document.getElementById('create-group-msg');
+    if (!name) { msgDiv.innerHTML = '<div class="error-msg">Name required</div>'; return; }
+    const res = await apiFetch('/groups', { method: 'POST', body: JSON.stringify({ name, description }) });
+    if (!res) return;
+    const data = await res.json();
+    if (res.ok) {
+      document.getElementById('create-group-form').style.display = 'none';
+      document.getElementById('new-group-name').value = '';
+      document.getElementById('new-group-desc').value = '';
+      await loadCurrentUser();
+      await loadGroups(); renderPageContent();
+    } else { msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`; }
+  });
+  document.querySelectorAll('.group-manage-btn').forEach(btn => {
+    btn.addEventListener('click', async () => { await loadGroupDetail(parseInt(btn.dataset.gid)); renderPageContent(); });
+  });
+  document.querySelectorAll('.group-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this group? Members will not be deleted.')) return;
+      const res = await apiFetch(`/groups/${btn.dataset.gid}`, { method: 'DELETE' });
+      if (res && res.ok) { await loadGroups(); renderPageContent(); }
+    });
+  });
+
+  // Group detail
+  document.getElementById('groups-back-btn')?.addEventListener('click', () => {
+    state.selectedGroupId = null; state.groupDetail = null; renderPageContent();
+  });
+  document.getElementById('save-group-desc-btn')?.addEventListener('click', async () => {
+    const description = document.getElementById('edit-group-desc').value.trim();
+    const msgDiv = document.getElementById('group-desc-msg');
+    const res = await apiFetch(`/groups/${state.selectedGroupId}`, { method: 'PUT', body: JSON.stringify({ description }) });
+    if (!res) return;
+    if (res.ok) {
+      state.groupDetail.description = description;
+      msgDiv.innerHTML = '<div class="success-msg">Description saved</div>';
+      setTimeout(() => { if (msgDiv) msgDiv.innerHTML = ''; }, 2000);
+    }
+  });
+  document.getElementById('add-member-btn')?.addEventListener('click', async () => {
+    const userId = document.getElementById('add-member-user')?.value;
+    const role = document.getElementById('add-member-role')?.value;
+    const msgDiv = document.getElementById('add-member-msg');
+    if (!userId) return;
+    const res = await apiFetch(`/groups/${state.selectedGroupId}/members`, { method: 'POST', body: JSON.stringify({ user_id: parseInt(userId), role }) });
+    if (!res) return;
+    const data = await res.json();
+    if (res.ok) { await loadGroupDetail(state.selectedGroupId); renderPageContent(); }
+    else { msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`; }
+  });
+  document.querySelectorAll('.group-member-role-toggle').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const { gid, uid, role } = btn.dataset;
+      const res = await apiFetch(`/groups/${gid}/members/${uid}`, { method: 'PUT', body: JSON.stringify({ role }) });
+      if (res && res.ok) { await loadGroupDetail(parseInt(gid)); renderPageContent(); }
+    });
+  });
+  document.querySelectorAll('.group-member-remove').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Remove this member from the group?')) return;
+      const { gid, uid } = btn.dataset;
+      const res = await apiFetch(`/groups/${gid}/members/${uid}`, { method: 'DELETE' });
+      if (res && res.ok) { await loadGroupDetail(parseInt(gid)); renderPageContent(); }
+    });
+  });
+
+  // Pagination
+  document.getElementById('members-prev-btn')?.addEventListener('click', () => {
+    if (state.groupMembersPage > 1) { state.groupMembersPage--; renderPageContent(); }
+  });
+  document.getElementById('members-next-btn')?.addEventListener('click', () => {
+    const total = state.groupDetail?.members?.length || 0;
+    const maxPage = Math.ceil(total / GROUP_MEMBERS_PAGE_SIZE);
+    if (state.groupMembersPage < maxPage) { state.groupMembersPage++; renderPageContent(); }
+  });
+
+  // Invite link
+  document.getElementById('gen-invite-btn')?.addEventListener('click', async () => {
+    const res = await apiFetch(`/groups/${state.selectedGroupId}/invites`, { method: 'POST' });
+    if (!res) return;
+    const data = await res.json();
+    if (res.ok) {
+      const link = `${window.location.origin}${window.location.pathname}?invite=${data.token}`;
+      document.getElementById('invite-link-display').value = link;
+      document.getElementById('copy-invite-btn').style.display = 'inline-flex';
+    }
+  });
+  document.getElementById('copy-invite-btn')?.addEventListener('click', () => {
+    const val = document.getElementById('invite-link-display').value;
+    navigator.clipboard.writeText(val).then(() => {
+      const btn = document.getElementById('copy-invite-btn');
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+    });
+  });
+}
+
+// ─── Record page ────────────────────────────────────────────────────
+function renderRecordPage() {
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 16);
+  const canRecordForOthers = userRole() === 'superadmin' || isGroupAdmin();
+  return `
+    <div class="page-header fade-in"><h2>Record a Lap</h2><p>Log your latest time on track</p></div>
+    <div id="record-msg"></div>
+    <div class="card fade-in">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Track</label>
+          <input type="text" id="rec-track" list="track-list" placeholder="e.g. Monza">
+          <datalist id="track-list">${state.tracks.map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label>Car</label>
+          <input type="text" id="rec-car" list="car-list" placeholder="e.g. Ferrari 296 GT3">
+          <datalist id="car-list">${state.cars.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label>Lap Time</label>
+          <div class="laptime-inputs">
+            <input type="number" id="rec-min" min="0" max="59" placeholder="m">
+            <span class="laptime-sep">:</span>
+            <input type="number" id="rec-sec" min="0" max="59" placeholder="ss">
+            <span class="laptime-sep">.</span>
+            <input type="number" id="rec-ms" min="0" max="999" placeholder="ms">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Weather</label>
+          <select id="rec-weather">${WEATHER_OPTIONS.map(w=>`<option value="${w}">${WEATHER_ICONS[w]||''} ${w}</option>`).join('')}</select>
+        </div>
+        <div class="form-group">
+          <label>Date &amp; Time</label>
+          <input type="datetime-local" id="rec-date" value="${dateStr}">
+        </div>
+        <div class="form-group">
+          <label>Notes (optional)</label>
+          <input type="text" id="rec-notes" placeholder="Tyre setup, conditions...">
+        </div>
+        ${canRecordForOthers ? `
+        <div class="form-group">
+          <label>Record For</label>
+          <select id="rec-user">
+            <option value="${state.user?.id}">Myself — ${escapeHtml(state.user?.display_name||'')}</option>
+            ${state.users.filter(u=>u.id!==state.user?.id).map(u=>`<option value="${u.id}">${escapeHtml(u.display_name)} (@${escapeHtml(u.username)})</option>`).join('')}
+          </select>
+        </div>` : ''}
+      </div>
+      <div style="margin-top:20px;display:flex;justify-content:flex-end;">
+        <button class="btn btn-primary" id="record-form-btn">${svgIcon('flag')} Save Lap</button>
+      </div>
+    </div>
+    ${state.laptimes.length > 0 ? `
+    <div class="card fade-in" style="animation-delay:0.1s;">
+      <div class="card-header"><span class="card-title">Recent Laps</span></div>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Track</th><th>Car</th><th>Time</th><th>Weather</th><th>Date</th><th></th></tr></thead>
+          <tbody>
+            ${state.laptimes.slice(0,5).map(lap=>`
+              <tr>
+                <td>${escapeHtml(lap.track)}</td><td>${escapeHtml(lap.car)}</td>
+                <td class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
+                <td><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
+                <td style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleDateString()}</td>
+                <td>${lap.user_id===state.user?.id?`<button class="delete-btn delete-lap" data-id="${lap.id}">×</button>`:''}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}`;
+}
+
+async function handleRecord() {
+  const track = document.getElementById('rec-track').value.trim();
+  const car = document.getElementById('rec-car').value.trim();
+  const min = document.getElementById('rec-min').value;
+  const sec = document.getElementById('rec-sec').value;
+  const ms = document.getElementById('rec-ms').value;
+  const weather = document.getElementById('rec-weather').value;
+  const date = document.getElementById('rec-date').value;
+  const notes = document.getElementById('rec-notes').value.trim();
+  const msgDiv = document.getElementById('record-msg');
+  if (!track || !car || (!min && !sec && !ms)) { msgDiv.innerHTML = '<div class="error-msg">Please fill in track, car, and lap time</div>'; return; }
+  const laptime_ms = laptimeToMs(min, sec, ms);
+  if (laptime_ms <= 0) { msgDiv.innerHTML = '<div class="error-msg">Lap time must be greater than zero</div>'; return; }
+  const body = { track, car, laptime_ms, weather, notes, recorded_at: date || new Date().toISOString() };
+  const targetUserId = document.getElementById('rec-user')?.value;
+  if (targetUserId && parseInt(targetUserId) !== state.user?.id) body.user_id = parseInt(targetUserId);
+  const res = await apiFetch('/laptimes', { method: 'POST', body: JSON.stringify(body) });
+  if (res && res.ok) {
+    msgDiv.innerHTML = '<div class="success-msg">Lap recorded! 🏁</div>';
+    document.getElementById('rec-min').value = '';
+    document.getElementById('rec-sec').value = '';
+    document.getElementById('rec-ms').value = '';
+    document.getElementById('rec-notes').value = '';
+    if (document.getElementById('rec-user')) document.getElementById('rec-user').value = state.user?.id;
+    await loadLaptimes(); await loadMeta(); renderPageContent();
+  } else {
+    const data = res ? await res.json() : {};
+    msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error||'Failed to save lap')}</div>`;
+  }
+}
+
+// ─── History page ───────────────────────────────────────────────────
+function renderHistoryPage() {
+  return `
+    <div class="page-header fade-in"><h2>Lap History</h2><p>All recorded laps</p></div>
+    ${renderFilters()}
+    ${state.laptimes.length===0 ? renderEmpty('No laps recorded yet') : `
+    <div class="card fade-in">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Driver</th><th>Track</th><th>Car</th><th>Time</th><th>Weather</th><th>Date</th><th></th></tr></thead>
+          <tbody>
+            ${state.laptimes.map(lap => {
+              const idx = state.users.findIndex(u=>u.id===lap.user_id);
+              const canDel = lap.user_id===state.user?.id || userRole()==='superadmin' || isGroupAdmin();
+              return `<tr>
+                <td><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(lap.display_name)}</span></td>
+                <td>${escapeHtml(lap.track)}</td><td>${escapeHtml(lap.car)}</td>
+                <td class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
+                <td><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
+                <td style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleString()}</td>
+                <td>${canDel?`<button class="delete-btn delete-lap" data-id="${lap.id}">×</button>`:''}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`}`;
+}
+
+// ─── Leaderboard page ───────────────────────────────────────────────
+function renderLeaderboardPage() {
+  return `
+    <div class="page-header fade-in"><h2>Leaderboard</h2><p>Who's fastest?</p></div>
+    ${renderFilters(['track','car'])}
+    ${state.leaderboard.length===0 ? renderEmpty('No data for this combo yet') : `
+    <div class="card fade-in">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th style="width:50px">#</th><th>Driver</th><th>Track</th><th>Car</th><th>Best Time</th><th>Laps</th><th>Gap</th></tr></thead>
+          <tbody>
+            ${state.leaderboard.map((row,i) => {
+              const posClass = i===0?'gold':i===1?'silver':i===2?'bronze':'';
+              const gap = i===0?'':'+'+msToLaptime(row.best_time-state.leaderboard[0].best_time);
+              const idx = state.users.findIndex(u=>u.id===row.user_id);
+              return `<tr>
+                <td><span class="lb-position ${posClass}">${i+1}</span></td>
+                <td><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(row.display_name)}</span></td>
+                <td>${escapeHtml(row.track)}</td><td>${escapeHtml(row.car)}</td>
+                <td class="laptime-cell">${msToLaptime(row.best_time)}</td>
+                <td style="color:var(--text-secondary)">${row.total_laps}</td>
+                <td class="lb-diff">${gap}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`}`;
+}
+
+// ─── Personal bests page ────────────────────────────────────────────
+function renderPBPage() {
+  return `
+    <div class="page-header fade-in"><h2>Personal Bests</h2><p>Best times per track &amp; car combo</p></div>
+    <div class="filter-bar fade-in">
+      <select class="filter-select" data-filter="user_id">
+        <option value="">My PBs</option>
+        ${state.users.map(u=>`<option value="${u.id}" ${state.filters.user_id==u.id?'selected':''}>${escapeHtml(u.display_name)}</option>`).join('')}
+      </select>
+    </div>
+    ${state.personalBests.length===0 ? renderEmpty('No personal bests yet') : `
+    <div class="stats-row fade-in">
+      <div class="stat-card"><div class="stat-label">Track/Car Combos</div><div class="stat-value accent">${state.personalBests.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Total Laps</div><div class="stat-value blue">${state.personalBests.reduce((s,r)=>s+r.attempts,0)}</div></div>
+      <div class="stat-card"><div class="stat-label">Best Overall</div><div class="stat-value green">${msToLaptime(Math.min(...state.personalBests.map(r=>r.best_time)))}</div></div>
+    </div>
+    <div class="card fade-in" style="animation-delay:0.1s;">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Track</th><th>Car</th><th>Best Time</th><th>Attempts</th></tr></thead>
+          <tbody>
+            ${state.personalBests.map(r=>`
+              <tr>
+                <td>${escapeHtml(r.track)}</td><td>${escapeHtml(r.car)}</td>
+                <td class="laptime-cell">${msToLaptime(r.best_time)} <span class="pb-badge">PB</span></td>
+                <td style="color:var(--text-secondary)">${r.attempts}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`}`;
+}
+
+// ─── Progress page ──────────────────────────────────────────────────
+function renderProgressPage() {
+  const noFilters = !state.filters.track || !state.filters.car;
+  return `
+    <div class="page-header fade-in"><h2>Progress</h2><p>Track improvement over time</p></div>
+    ${renderFilters(['track','car','user_id'])}
+    ${noFilters ? `
+      <div class="empty-state fade-in">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <h3>Select a track and car</h3>
+        <p>Choose both a track and a car above to see progress over time</p>
+      </div>` :
+    state.progress.length===0 ? renderEmpty('No laps for this combination yet') : `
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Lap Times Over Time</span></div>
+      <div class="chart-container"><canvas id="progress-chart"></canvas></div>
+    </div>`}`;
+}
+
+function renderProgressChart() {
+  const canvas = document.getElementById('progress-chart');
+  if (!canvas || state.progress.length===0) return;
+  new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: state.progress.map(p=>new Date(p.recorded_at).toLocaleDateString()),
+      datasets: [{ label: 'Lap Time', data: state.progress.map(p=>p.laptime_ms/1000), borderColor: '#e63946', backgroundColor: 'rgba(230,57,70,0.1)', fill: true, tension: 0.3, pointBackgroundColor: '#e63946', pointRadius: 4, pointHoverRadius: 7 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => msToLaptime(state.progress[ctx.dataIndex].laptime_ms), afterLabel: ctx => `Weather: ${state.progress[ctx.dataIndex].weather}` } } },
+      scales: {
+        x: { ticks: { color: '#55556a', font: { size: 11 } }, grid: { color: 'rgba(42,42,58,0.5)' } },
+        y: { ticks: { color: '#55556a', font: { family: 'JetBrains Mono', size: 11 }, callback: v => { const m=Math.floor(v/60); const s=(v%60).toFixed(0); return `${m}:${String(s).padStart(2,'0')}`; } }, grid: { color: 'rgba(42,42,58,0.5)' } }
+      }
+    }
+  });
+}
+
+// ─── Export page ────────────────────────────────────────────────────
+function renderExportPage() {
+  return `
+    <div class="page-header fade-in"><h2>Export Data</h2><p>Download all lap times</p></div>
+    <div class="card fade-in">
+      <p style="color:var(--text-secondary);margin-bottom:20px;font-size:14px;">Export all recorded lap times for all drivers, including driver name, track, car, lap time, weather, notes, and date.</p>
+      <div style="display:flex;gap:12px;">
+        <button class="btn btn-primary" id="export-csv">${svgIcon('download')} Export as CSV</button>
+        <button class="btn btn-secondary" id="export-json">${svgIcon('download')} Export as JSON</button>
+      </div>
+    </div>`;
+}
+
+// ─── Profile page ────────────────────────────────────────────────────
+function renderProfilePage() {
+  const p = state.profileData;
+  const bio = p?.bio || state.user?.bio || '';
+  const groups = p?.groups || state.user?.groups || [];
+  const stats = p?.stats;
+  return `
+    <div class="page-header fade-in"><h2>My Profile</h2><p>Manage your account</p></div>
+    <div id="profile-msg"></div>
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Account</span></div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Display Name</label>
+          <input type="text" id="prof-display" value="${escapeHtml(state.user?.display_name||'')}">
+        </div>
+        <div class="form-group">
+          <label>Username</label>
+          <input type="text" value="${escapeHtml(state.user?.username||'')}" disabled>
+        </div>
+        <div class="form-group" style="grid-column:1/-1;">
+          <label>Bio (optional)</label>
+          <input type="text" id="prof-bio" value="${escapeHtml(bio)}" placeholder="e.g. Weekend racer, Monza specialist">
+        </div>
+      </div>
+      <div style="margin-top:20px;display:flex;justify-content:flex-end;">
+        <button class="btn btn-primary" id="profile-save-btn">Save Changes</button>
+      </div>
+    </div>
+    ${stats ? `
+    <div class="stats-row fade-in">
+      <div class="stat-card"><div class="stat-label">Total Laps</div><div class="stat-value blue">${stats.total_laps}</div></div>
+      <div class="stat-card"><div class="stat-label">Track/Car Combos</div><div class="stat-value accent">${stats.combos}</div></div>
+      <div class="stat-card"><div class="stat-label">Role</div><div style="margin-top:6px;">${roleBadgeHtml(userRole())}</div></div>
+    </div>` : ''}
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Groups</span></div>
+      ${groups.length===0
+        ? `<p style="color:var(--text-muted);font-size:13px;">Not a member of any group.</p>`
+        : `<div style="display:flex;flex-wrap:wrap;gap:8px;">
+            ${groups.map(g=>`
+              <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 14px;font-size:13px;display:flex;align-items:center;gap:8px;">
+                <strong>${escapeHtml(g.name)}</strong> ${roleBadgeHtml(g.group_role)}
+              </div>`).join('')}
+          </div>`}
+    </div>`;
+}
+
+// ─── Admin page ─────────────────────────────────────────────────────
+function renderAdminPage() {
+  if (userRole()!=='superadmin') return `<div class="page-header fade-in"><h2>Admin Panel</h2></div>${renderEmpty('Access denied')}`;
+  return `
+    <div class="page-header fade-in"><h2>Admin Panel</h2><p>Manage users and global roles</p></div>
+    ${state.adminUsers.length===0 ? renderEmpty('No users found') : `
+    <div class="card fade-in">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Display Name</th><th>Username</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${state.adminUsers.map(u=>`
+              <tr>
+                <td><strong>${escapeHtml(u.display_name)}</strong></td>
+                <td style="color:var(--text-secondary);font-family:var(--mono);font-size:12px;">@${escapeHtml(u.username)}</td>
+                <td>${roleBadgeHtml(u.role)}</td>
+                <td style="color:var(--text-secondary);font-size:12px;">${new Date(u.created_at).toLocaleDateString()}</td>
+                <td>${u.id!==state.user?.id?`
+                  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select class="inline-select admin-role-select" data-uid="${u.id}">
+                      <option value="member" ${u.role==='member'?'selected':''}>Member</option>
+                      <option value="superadmin" ${u.role==='superadmin'?'selected':''}>Superadmin</option>
+                    </select>
+                    <button class="btn btn-sm btn-secondary admin-role-save" data-uid="${u.id}">Save</button>
+                    <button class="btn btn-sm btn-danger admin-delete-user" data-uid="${u.id}">Delete</button>
+                  </div>` : '<span style="color:var(--text-muted);font-size:12px;">You</span>'}
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`}`;
+}
+
+// ─── Groups page ────────────────────────────────────────────────────
+function renderGroupsPage() {
+  if (state.selectedGroupId && state.groupDetail) return renderGroupDetail();
+  const isSuperAdmin = userRole()==='superadmin';
+  return `
+    <div class="page-header fade-in">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
+        <div><h2>Groups</h2><p>Manage racing groups and memberships</p></div>
+        ${isSuperAdmin?`<button class="btn btn-primary" id="create-group-btn">${svgIcon('plus')} New Group</button>`:''}
+      </div>
+    </div>
+    ${isSuperAdmin?`
+    <div class="card fade-in" id="create-group-form" style="display:none;">
+      <div class="card-header"><span class="card-title">Create Group</span></div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Group Name</label>
+          <input type="text" id="new-group-name" placeholder="e.g. Weekend Warriors">
+        </div>
+        <div class="form-group" style="grid-column:1/-1;">
+          <label>Description (optional)</label>
+          <input type="text" id="new-group-desc" placeholder="What is this group about?">
+        </div>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:10px;">
+        <button class="btn btn-primary" id="create-group-submit">Create</button>
+        <button class="btn btn-secondary" id="create-group-cancel">Cancel</button>
+      </div>
+      <div id="create-group-msg" style="margin-top:10px;"></div>
+    </div>`:''}
+    ${state.groups.length===0 ? renderEmpty('No groups yet') : `
+    <div class="fade-in">
+      ${state.groups.map(grp=>`
+        <div class="card group-card">
+          <div class="group-card-info">
+            <div class="group-card-name">${escapeHtml(grp.name)}</div>
+            ${grp.description?`<div class="group-card-desc">${escapeHtml(grp.description)}</div>`:''}
+            <div class="group-card-meta">${grp.member_count} member${grp.member_count!==1?'s':''} · created by ${escapeHtml(grp.created_by_name)}</div>
+          </div>
+          <div class="group-card-actions">
+            <button class="btn btn-sm btn-secondary group-manage-btn" data-gid="${grp.id}">Manage</button>
+            ${isSuperAdmin?`<button class="btn btn-sm btn-danger group-delete-btn" data-gid="${grp.id}">Delete</button>`:''}
+          </div>
+        </div>`).join('')}
+    </div>`}`;
+}
+
+function renderGroupDetail() {
+  const group = state.groupDetail;
+  const isSuperAdmin = userRole()==='superadmin';
+  const myMembership = group.members.find(m=>m.id===state.user?.id);
+  const myGroupRole = myMembership?.group_role || (isSuperAdmin?'group_admin':'');
+  const canManage = isSuperAdmin || myGroupRole==='group_admin';
+  const memberIds = new Set(group.members.map(m=>m.id));
+  const nonMembers = state.users.filter(u=>!memberIds.has(u.id));
+
+  // Pagination
+  const total = group.members.length;
+  const totalPages = Math.ceil(total / GROUP_MEMBERS_PAGE_SIZE) || 1;
+  const page = Math.min(state.groupMembersPage, totalPages);
+  const paged = group.members.slice((page-1)*GROUP_MEMBERS_PAGE_SIZE, page*GROUP_MEMBERS_PAGE_SIZE);
+
+  return `
+    <div class="page-header fade-in">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button class="btn btn-ghost" id="groups-back-btn">← Back</button>
+        <div>
+          <h2>${escapeHtml(group.name)}</h2>
+          <p>${total} member${total!==1?'s':''}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">About this Group</span></div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="edit-group-desc" ${canManage?'':'disabled'}>${escapeHtml(group.description||'')}</textarea>
+      </div>
+      ${canManage?`
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px;">
+        <button class="btn btn-secondary btn-sm" id="save-group-desc-btn">Save Description</button>
+        <span id="group-desc-msg" style="font-size:12px;"></span>
+      </div>`:''}
+    </div>
+
+    ${canManage && nonMembers.length>0?`
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Add Member</span></div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:200px;">
+          <label>User</label>
+          <select id="add-member-user">
+            ${nonMembers.map(u=>`<option value="${u.id}">${escapeHtml(u.display_name)} (@${escapeHtml(u.username)})</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="min-width:150px;">
+          <label>Group Role</label>
+          <select id="add-member-role">
+            <option value="member">Member</option>
+            <option value="group_admin">Group Admin</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="add-member-btn">Add</button>
+      </div>
+      <div id="add-member-msg" style="margin-top:10px;"></div>
+    </div>`:''}
+
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Members</span></div>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Driver</th><th>Username</th><th>App Role</th><th>Group Role</th>${canManage?'<th>Actions</th>':''}</tr></thead>
+          <tbody>
+            ${paged.map(m=>`
+              <tr>
+                <td><strong>${escapeHtml(m.display_name)}</strong></td>
+                <td style="color:var(--text-secondary);font-family:var(--mono);font-size:12px;">@${escapeHtml(m.username)}</td>
+                <td>${roleBadgeHtml(m.app_role)}</td>
+                <td>${roleBadgeHtml(m.group_role)}</td>
+                ${canManage?`<td>${m.id!==state.user?.id?`
+                  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn btn-sm btn-secondary group-member-role-toggle" data-gid="${group.id}" data-uid="${m.id}" data-role="${m.group_role==='group_admin'?'member':'group_admin'}">
+                      ${m.group_role==='group_admin'?'Demote':'Promote'}
+                    </button>
+                    <button class="btn btn-sm btn-danger group-member-remove" data-gid="${group.id}" data-uid="${m.id}">Remove</button>
+                  </div>` : '<span style="color:var(--text-muted);font-size:12px;">You</span>'}</td>`:''}
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${totalPages>1?`
+      <div class="pagination">
+        <button class="btn btn-sm btn-secondary" id="members-prev-btn" ${page<=1?'disabled':''}>←</button>
+        <span class="pagination-info">Page ${page} of ${totalPages}</span>
+        <button class="btn btn-sm btn-secondary" id="members-next-btn" ${page>=totalPages?'disabled':''}>→</button>
+      </div>`:''}
+    </div>
+
+    ${canManage?`
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Invite Link</span></div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
+        Generate a shareable link. Anyone with the link can join this group.
+      </p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <input type="text" id="invite-link-display" readonly placeholder="Click Generate to create a link"
+          style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-family:var(--mono);font-size:12px;padding:10px 12px;outline:none;">
+        <button class="btn btn-secondary" id="gen-invite-btn">Generate</button>
+        <button class="btn btn-ghost" id="copy-invite-btn" style="display:none;">Copy</button>
+      </div>
+    </div>`:''}`;
+}
+
+// ─── Shared components ──────────────────────────────────────────────
+function renderFilters(fields=['track','car','user_id']) {
+  return `
+    <div class="filter-bar fade-in">
+      ${fields.includes('track')?`<select class="filter-select" data-filter="track"><option value="">All Tracks</option>${state.tracks.map(t=>`<option value="${escapeHtml(t)}" ${state.filters.track===t?'selected':''}>${escapeHtml(t)}</option>`).join('')}</select>`:''}
+      ${fields.includes('car')?`<select class="filter-select" data-filter="car"><option value="">All Cars</option>${state.cars.map(c=>`<option value="${escapeHtml(c)}" ${state.filters.car===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select>`:''}
+      ${fields.includes('user_id')?`<select class="filter-select" data-filter="user_id"><option value="">All Drivers</option>${state.users.map(u=>`<option value="${u.id}" ${state.filters.user_id==u.id?'selected':''}>${escapeHtml(u.display_name)}</option>`).join('')}</select>`:''}
+    </div>`;
+}
+
+function renderEmpty(msg) {
+  return `<div class="empty-state fade-in">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
+    <h3>${msg}</h3><p>Start recording laps to see data here</p>
+  </div>`;
+}
+
+// ─── SVG Icons ──────────────────────────────────────────────────────
+function svgIcon(name) {
+  const icons = {
+    plus:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+    clock:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+    trophy:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9H4a2 2 0 01-2-2V5h4M18 9h2a2 2 0 002-2V5h-4M4 5h16v4a6 6 0 01-6 6h-4a6 6 0 01-6-6V5zM12 15v3M8 21h8M10 18h4"/></svg>',
+    star:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
+    chart:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
+    flag:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7"/></svg>',
+    menu:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>',
+    shield:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    users:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>',
+    user:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  };
+  return icons[name] || '';
+}
+
+// ─── Init ───────────────────────────────────────────────────────────
+const urlParams = new URLSearchParams(window.location.search);
+const inviteToken = urlParams.get('invite');
+if (inviteToken && state.token) {
+  state.pendingInvite = inviteToken;
+  fetch(`${API}/invites/${inviteToken}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(info => { state.inviteInfo = info; render(); })
+    .catch(() => render());
+} else {
+  render();
+}
+</script>
+</body>
+</html>

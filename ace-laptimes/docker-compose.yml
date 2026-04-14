@@ -1,0 +1,54 @@
+# ACE Lap Tracker — Docker Compose
+#
+# Uses pre-built images. No build step required.
+#
+# Usage:
+#   1. Create a .env file:
+#        SECRET_KEY=your-random-secret-here
+#      Generate one: openssl rand -hex 32
+#   2. docker compose up -d
+#   3. Open http://your-server-ip:8099
+
+services:
+  backend:
+    image: apostle818/ace-laptimes-backend:latest
+    container_name: ace-backend
+    restart: unless-stopped
+    volumes:
+      - db-data:/app/data
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-to-a-random-string}
+      - DATABASE_PATH=/app/data/laptimes.db
+    expose:
+      - "5000"
+    networks:
+      - ace-net
+
+  frontend:
+    image: apostle818/ace-laptimes-frontend:latest
+    container_name: ace-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - ace-net
+
+  nginx:
+    image: apostle818/ace-laptimes-nginx:latest
+    container_name: ace-nginx
+    restart: unless-stopped
+    ports:
+      - "8099:80"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - ace-net
+
+volumes:
+  db-data:
+    driver: local
+
+networks:
+  ace-net:
+    driver: bridge
