@@ -8,13 +8,11 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, g, Response
-from flask_cors import CORS
 import bcrypt
 import jwt
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
-CORS(app)
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "./data/laptimes.db")
 
 # ─── Database ────────────────────────────────────────────────────────
