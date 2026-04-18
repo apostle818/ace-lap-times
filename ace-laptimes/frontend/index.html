@@ -123,8 +123,8 @@ body {
 .form-group textarea { resize: vertical; min-height: 80px; }
 
 .laptime-inputs { display: flex; gap: 6px; align-items: center; }
-.laptime-inputs input { width: 65px; text-align: center; font-family: var(--mono); font-size: 15px; font-weight: 600; }
-.laptime-sep { color: var(--text-muted); font-family: var(--mono); font-weight: 700; font-size: 18px; }
+.laptime-inputs input { flex: 1; min-width: 44px; max-width: 80px; text-align: center; font-family: var(--mono); font-size: 15px; font-weight: 600; }
+.laptime-sep { color: var(--text-muted); font-family: var(--mono); font-weight: 700; font-size: 18px; flex-shrink: 0; }
 
 .btn {
   padding: 10px 20px; border-radius: var(--radius-sm); border: none; cursor: pointer;
@@ -150,7 +150,7 @@ body {
 .weather-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; border-radius: 4px; background: var(--bg-input); color: var(--text-secondary); }
 .driver-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; }
 .driver-dot { width: 8px; height: 8px; border-radius: 50%; }
-.delete-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; border-radius: 4px; transition: all 0.15s; font-size: 16px; }
+.delete-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 8px; border-radius: 4px; transition: all 0.15s; font-size: 16px; display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; }
 .delete-btn:hover { color: var(--accent); background: var(--accent-soft); }
 
 .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 24px; }
@@ -171,14 +171,14 @@ body {
 .lb-position.bronze { color: #cd7f32; }
 .lb-diff { font-family: var(--mono); font-size: 12px; color: var(--accent); }
 
-.login-wrapper { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg-primary); position: relative; overflow: hidden; }
+.login-wrapper { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--bg-primary); position: relative; overflow: hidden; padding: 16px; }
 .login-wrapper::before {
   content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
   background: radial-gradient(circle at 30% 40%, var(--accent-glow) 0%, transparent 50%), radial-gradient(circle at 70% 60%, rgba(74,158,255,0.08) 0%, transparent 50%);
   animation: loginGlow 8s ease-in-out infinite alternate;
 }
 @keyframes loginGlow { 0% { transform: translate(0,0); } 100% { transform: translate(-3%,-3%); } }
-.login-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 40px; width: 380px; position: relative; box-shadow: var(--shadow); }
+.login-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 40px; width: min(380px, 100%); position: relative; box-shadow: var(--shadow); }
 .login-box h1 { font-size: 24px; font-weight: 800; letter-spacing: 3px; text-transform: uppercase; text-align: center; background: linear-gradient(135deg, var(--accent), #ff6b6b); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 4px; }
 .login-box .login-sub { text-align: center; font-size: 12px; color: var(--text-muted); margin-bottom: 28px; letter-spacing: 0.5px; }
 .login-box .form-group { margin-bottom: 16px; }
@@ -212,17 +212,121 @@ body {
 
 .invite-banner { background: var(--blue-soft); border: 1px solid rgba(74,158,255,0.3); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--blue); }
 
-.mobile-toggle { display: none; position: fixed; top: 12px; left: 12px; z-index: 200; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); padding: 8px; cursor: pointer; }
+.mobile-toggle { display: none; }
 
+/* ─── Sidebar backdrop ─── */
+.sidebar-backdrop {
+  display: none; position: fixed; inset: 0; z-index: 99;
+  background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+}
+.sidebar-backdrop.visible { display: block; }
+
+/* ─── Bottom navigation ─── */
+.bottom-nav {
+  display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+  background: var(--bg-secondary); border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+.bottom-nav-items { display: flex; height: 60px; }
+.bottom-nav-item {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; cursor: pointer; color: var(--text-muted); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.3px; text-transform: uppercase; transition: color 0.15s;
+  -webkit-tap-highlight-color: transparent; user-select: none; padding: 8px 4px;
+}
+.bottom-nav-item svg { width: 20px; height: 20px; }
+.bottom-nav-item.active { color: var(--accent); }
+.bottom-nav-item:active { opacity: 0.7; }
+
+/* ─── Overlay backdrop (more sheet) ─── */
+.overlay-backdrop {
+  display: none; position: fixed; inset: 0; z-index: 199;
+  background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+}
+.overlay-backdrop.visible { display: block; }
+
+/* ─── More sheet ─── */
+.more-sheet {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+  background: var(--bg-secondary); border-top: 1px solid var(--border);
+  border-radius: 20px 20px 0 0;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0) + 8px);
+  transform: translateY(100%);
+  transition: transform 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.more-sheet.open { transform: translateY(0); }
+.more-sheet-handle { width: 36px; height: 4px; border-radius: 2px; background: var(--border); margin: 12px auto 4px; }
+.more-sheet-user {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px 16px; border-bottom: 1px solid var(--border);
+}
+.more-sheet-user-info { flex: 1; min-width: 0; }
+.more-sheet-user-name { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.more-sheet-user-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.more-sheet-signout {
+  font-size: 12px; color: var(--text-muted); cursor: pointer; transition: color 0.15s;
+  padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: none; font-family: var(--font);
+}
+.more-sheet-signout:hover { color: var(--accent); }
+.more-sheet-section-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); padding: 12px 20px 4px; }
+.more-sheet-item {
+  display: flex; align-items: center; gap: 14px; padding: 13px 20px; cursor: pointer;
+  color: var(--text-secondary); font-size: 15px; font-weight: 500; transition: background 0.1s;
+  -webkit-tap-highlight-color: transparent; user-select: none;
+}
+.more-sheet-item svg { width: 20px; height: 20px; flex-shrink: 0; }
+.more-sheet-item:active { background: var(--bg-card); }
+.more-sheet-item.active { color: var(--accent); background: var(--accent-soft); }
+
+/* ─── Table → card layout on small screens ─── */
+@media (max-width: 600px) {
+  .table-scroll { overflow-x: visible; }
+  .data-table thead { display: none; }
+  .data-table tbody tr {
+    display: block; margin-bottom: 10px;
+    background: var(--bg-card-hover); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 4px 0;
+  }
+  .data-table td {
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid rgba(42,42,58,0.4);
+    padding: 10px 14px; font-size: 13px; min-height: 44px;
+  }
+  .data-table td:last-child { border-bottom: none; }
+  .data-table td[data-label]::before {
+    content: attr(data-label); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted);
+    flex-shrink: 0; margin-right: 12px;
+  }
+  .data-table td:empty { display: none; }
+  .data-table tr:hover td { background: transparent; }
+}
+
+/* ─── Mobile ≤768px ─── */
 @media (max-width: 768px) {
-  .mobile-toggle { display: block; }
   .sidebar { transform: translateX(-100%); }
-  .sidebar.open { transform: translateX(0); }
-  .main-content { margin-left: 0; padding: 20px 16px; padding-top: 56px; }
+  .main-content { margin-left: 0; padding: 20px 16px 84px; }
   .form-grid { grid-template-columns: 1fr; }
   .stats-row { grid-template-columns: 1fr 1fr; }
-  .data-table { font-size: 12px; }
-  .data-table th, .data-table td { padding: 8px 8px; }
+  .bottom-nav { display: block; }
+  .form-group input, .form-group select, .form-group textarea { font-size: 16px; }
+  .filter-bar select, .filter-bar input { font-size: 16px; }
+  .chart-container { height: 220px; }
+  .page-header h2 { font-size: 22px; }
+  .login-box { padding: 28px 20px; }
+  .btn-sm { min-height: 36px; }
+}
+
+/* ─── Small phones ≤480px ─── */
+@media (max-width: 480px) {
+  .main-content { padding-left: 12px; padding-right: 12px; }
+  .card { padding: 16px 14px; }
+  .stat-value { font-size: 20px; }
+  .group-card { flex-direction: column; align-items: flex-start; }
+  .group-card-actions { width: 100%; justify-content: flex-start; }
+  .page-header h2 { font-size: 20px; }
+  .login-box { padding: 24px 14px; }
 }
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -497,10 +601,19 @@ function renderApp() {
   if (role === 'superadmin') mgmtPages.push({ id: 'admin', label: 'Admin Panel', icon: svgIcon('shield') });
   const initial = state.user?.display_name?.charAt(0)?.toUpperCase() || '?';
   const userRoleBadge = role !== 'member' ? roleBadgeHtml(role) : '';
+  const bottomTabs = ['record','history','leaderboard','personal-bests'];
+  const isOverflow = !bottomTabs.includes(state.page);
+  const overflowPages = [
+    { id:'progress',     label:'Progress',    icon:'chart'    },
+    { id:'export',       label:'Export Data', icon:'download' },
+    { id:'my-profile',   label:'My Profile',  icon:'user'     },
+    ...(role==='superadmin'||groupAdmin ? [{ id:'groups', label:'Groups', icon:'users' }] : []),
+    ...(role==='superadmin'             ? [{ id:'admin',  label:'Admin Panel', icon:'shield' }] : []),
+  ];
   return `
-    <button class="mobile-toggle" id="mobile-toggle">${svgIcon('menu')}</button>
+    <div class="overlay-backdrop" id="overlay-backdrop"></div>
     <div class="app-shell">
-      <aside class="sidebar${state.sidebarOpen?' open':''}" id="sidebar">
+      <aside class="sidebar" id="sidebar">
         <div class="logo-area"><h1>ACE Laps</h1><div class="subtitle">Assetto Corsa Evo</div></div>
         <nav class="nav-section">
           <div class="nav-label">Menu</div>
@@ -519,22 +632,74 @@ function renderApp() {
         </div>
       </aside>
       <main class="main-content"><div id="page-content"></div></main>
+    </div>
+    <nav class="bottom-nav">
+      <div class="bottom-nav-items">
+        <div class="bottom-nav-item${state.page==='record'?' active':''}" data-page="record">${svgIcon('plus')}Record</div>
+        <div class="bottom-nav-item${state.page==='history'?' active':''}" data-page="history">${svgIcon('clock')}History</div>
+        <div class="bottom-nav-item${state.page==='leaderboard'?' active':''}" data-page="leaderboard">${svgIcon('trophy')}Board</div>
+        <div class="bottom-nav-item${state.page==='personal-bests'?' active':''}" data-page="personal-bests">${svgIcon('star')}Bests</div>
+        <div class="bottom-nav-item${isOverflow?' active':''}" id="more-btn">${svgIcon('more')}More</div>
+      </div>
+    </nav>
+    <div class="more-sheet" id="more-sheet">
+      <div class="more-sheet-handle"></div>
+      <div class="more-sheet-user">
+        <div class="user-avatar" style="width:40px;height:40px;font-size:16px;flex-shrink:0;">${initial}</div>
+        <div class="more-sheet-user-info">
+          <div class="more-sheet-user-name">${escapeHtml(state.user?.display_name||'')} ${userRoleBadge}</div>
+          <div class="more-sheet-user-sub">@${escapeHtml(state.user?.username||'')}</div>
+        </div>
+        <button class="more-sheet-signout" id="more-sheet-logout">Sign out</button>
+      </div>
+      <div class="more-sheet-section-label">Navigation</div>
+      ${overflowPages.map(p=>`<div class="more-sheet-item${state.page===p.id?' active':''}" data-page="${p.id}">${svgIcon(p.icon)} ${p.label}</div>`).join('')}
     </div>`;
+}
+
+function openMoreSheet() {
+  document.getElementById('more-sheet')?.classList.add('open');
+  document.getElementById('overlay-backdrop')?.classList.add('visible');
+}
+function closeMoreSheet() {
+  document.getElementById('more-sheet')?.classList.remove('open');
+  document.getElementById('overlay-backdrop')?.classList.remove('visible');
 }
 
 function bindAppEvents() {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.addEventListener('click', () => {
-      state.page = el.dataset.page; state.sidebarOpen = false;
+      state.page = el.dataset.page;
       state.selectedGroupId = null; state.groupDetail = null; state.groupMembersPage = 1;
       render();
     });
   });
   document.getElementById('logout-btn')?.addEventListener('click', logout);
-  document.getElementById('mobile-toggle')?.addEventListener('click', () => {
-    state.sidebarOpen = !state.sidebarOpen;
-    document.getElementById('sidebar')?.classList.toggle('open', state.sidebarOpen);
+
+  // Bottom nav tabs
+  document.querySelectorAll('.bottom-nav-item[data-page]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.page = el.dataset.page;
+      state.selectedGroupId = null; state.groupDetail = null; state.groupMembersPage = 1;
+      render();
+    });
   });
+
+  // More sheet open/close
+  document.getElementById('more-btn')?.addEventListener('click', openMoreSheet);
+  document.getElementById('overlay-backdrop')?.addEventListener('click', closeMoreSheet);
+
+  // More sheet navigation
+  document.querySelectorAll('.more-sheet-item[data-page]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.page = el.dataset.page;
+      state.selectedGroupId = null; state.groupDetail = null; state.groupMembersPage = 1;
+      closeMoreSheet();
+      render();
+    });
+  });
+
+  document.getElementById('more-sheet-logout')?.addEventListener('click', logout);
 }
 
 // ─── Page content ───────────────────────────────────────────────────
@@ -784,10 +949,11 @@ function renderRecordPage() {
           <tbody>
             ${state.laptimes.slice(0,5).map(lap=>`
               <tr>
-                <td>${escapeHtml(lap.track)}</td><td>${escapeHtml(lap.car)}</td>
-                <td class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
-                <td><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
-                <td style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleDateString()}</td>
+                <td data-label="Track">${escapeHtml(lap.track)}</td>
+                <td data-label="Car">${escapeHtml(lap.car)}</td>
+                <td data-label="Time" class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
+                <td data-label="Weather"><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
+                <td data-label="Date" style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleDateString()}</td>
                 <td>${lap.user_id===state.user?.id?`<button class="delete-btn delete-lap" data-id="${lap.id}">×</button>`:''}</td>
               </tr>`).join('')}
           </tbody>
@@ -842,11 +1008,12 @@ function renderHistoryPage() {
               const idx = state.users.findIndex(u=>u.id===lap.user_id);
               const canDel = lap.user_id===state.user?.id || userRole()==='superadmin' || isGroupAdmin();
               return `<tr>
-                <td><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(lap.display_name)}</span></td>
-                <td>${escapeHtml(lap.track)}</td><td>${escapeHtml(lap.car)}</td>
-                <td class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
-                <td><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
-                <td style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleString()}</td>
+                <td data-label="Driver"><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(lap.display_name)}</span></td>
+                <td data-label="Track">${escapeHtml(lap.track)}</td>
+                <td data-label="Car">${escapeHtml(lap.car)}</td>
+                <td data-label="Time" class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
+                <td data-label="Weather"><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
+                <td data-label="Date" style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleString()}</td>
                 <td>${canDel?`<button class="delete-btn delete-lap" data-id="${lap.id}">×</button>`:''}</td>
               </tr>`;
             }).join('')}
@@ -872,12 +1039,13 @@ function renderLeaderboardPage() {
               const gap = i===0?'':'+'+msToLaptime(row.best_time-state.leaderboard[0].best_time);
               const idx = state.users.findIndex(u=>u.id===row.user_id);
               return `<tr>
-                <td><span class="lb-position ${posClass}">${i+1}</span></td>
-                <td><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(row.display_name)}</span></td>
-                <td>${escapeHtml(row.track)}</td><td>${escapeHtml(row.car)}</td>
-                <td class="laptime-cell">${msToLaptime(row.best_time)}</td>
-                <td style="color:var(--text-secondary)">${row.total_laps}</td>
-                <td class="lb-diff">${gap}</td>
+                <td data-label="#"><span class="lb-position ${posClass}">${i+1}</span></td>
+                <td data-label="Driver"><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(row.display_name)}</span></td>
+                <td data-label="Track">${escapeHtml(row.track)}</td>
+                <td data-label="Car">${escapeHtml(row.car)}</td>
+                <td data-label="Best Time" class="laptime-cell">${msToLaptime(row.best_time)}</td>
+                <td data-label="Laps" style="color:var(--text-secondary)">${row.total_laps}</td>
+                <td data-label="Gap" class="lb-diff">${gap}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -909,9 +1077,10 @@ function renderPBPage() {
           <tbody>
             ${state.personalBests.map(r=>`
               <tr>
-                <td>${escapeHtml(r.track)}</td><td>${escapeHtml(r.car)}</td>
-                <td class="laptime-cell">${msToLaptime(r.best_time)} <span class="pb-badge">PB</span></td>
-                <td style="color:var(--text-secondary)">${r.attempts}</td>
+                <td data-label="Track">${escapeHtml(r.track)}</td>
+                <td data-label="Car">${escapeHtml(r.car)}</td>
+                <td data-label="Best Time" class="laptime-cell">${msToLaptime(r.best_time)} <span class="pb-badge">PB</span></td>
+                <td data-label="Attempts" style="color:var(--text-secondary)">${r.attempts}</td>
               </tr>`).join('')}
           </tbody>
         </table>
@@ -1032,10 +1201,10 @@ function renderAdminPage() {
           <tbody>
             ${state.adminUsers.map(u=>`
               <tr>
-                <td><strong>${escapeHtml(u.display_name)}</strong></td>
-                <td style="color:var(--text-secondary);font-family:var(--mono);font-size:12px;">@${escapeHtml(u.username)}</td>
-                <td>${roleBadgeHtml(u.role)}</td>
-                <td style="color:var(--text-secondary);font-size:12px;">${new Date(u.created_at).toLocaleDateString()}</td>
+                <td data-label="Name"><strong>${escapeHtml(u.display_name)}</strong></td>
+                <td data-label="Username" style="color:var(--text-secondary);font-family:var(--mono);font-size:12px;">@${escapeHtml(u.username)}</td>
+                <td data-label="Role">${roleBadgeHtml(u.role)}</td>
+                <td data-label="Joined" style="color:var(--text-secondary);font-size:12px;">${new Date(u.created_at).toLocaleDateString()}</td>
                 <td>${u.id!==state.user?.id?`
                   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                     <select class="inline-select admin-role-select" data-uid="${u.id}">
@@ -1169,10 +1338,10 @@ function renderGroupDetail() {
           <tbody>
             ${paged.map(m=>`
               <tr>
-                <td><strong>${escapeHtml(m.display_name)}</strong></td>
-                <td style="color:var(--text-secondary);font-family:var(--mono);font-size:12px;">@${escapeHtml(m.username)}</td>
-                <td>${roleBadgeHtml(m.app_role)}</td>
-                <td>${roleBadgeHtml(m.group_role)}</td>
+                <td data-label="Driver"><strong>${escapeHtml(m.display_name)}</strong></td>
+                <td data-label="Username" style="color:var(--text-secondary);font-family:var(--mono);font-size:12px;">@${escapeHtml(m.username)}</td>
+                <td data-label="App Role">${roleBadgeHtml(m.app_role)}</td>
+                <td data-label="Group Role">${roleBadgeHtml(m.group_role)}</td>
                 ${canManage?`<td>${m.id!==state.user?.id?`
                   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                     <button class="btn btn-sm btn-secondary group-member-role-toggle" data-gid="${group.id}" data-uid="${m.id}" data-role="${m.group_role==='group_admin'?'member':'group_admin'}">
@@ -1235,6 +1404,8 @@ function svgIcon(name) {
     download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
     flag:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7"/></svg>',
     menu:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>',
+    more:     '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+    close:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
     shield:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     users:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>',
     user:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
