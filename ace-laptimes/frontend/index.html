@@ -102,6 +102,22 @@ body {
 .page-header { margin-bottom: 28px; }
 .page-header h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
 .page-header p { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
+.page-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.page-header-row > .page-header-text { min-width: 0; }
+.page-refresh-btn {
+  flex-shrink: 0; width: 38px; height: 38px; padding: 0;
+  border-radius: var(--radius-sm); background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-secondary); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: all 0.15s ease;
+}
+.page-refresh-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--text-muted); }
+.page-refresh-btn:disabled { opacity: 0.6; cursor: wait; }
+.page-refresh-btn svg { width: 18px; height: 18px; transition: transform 0.2s ease; }
+.page-refresh-btn:hover svg { transform: rotate(45deg); }
+.page-refresh-btn.spinning svg { animation: refresh-spin 0.8s linear infinite; }
+.page-refresh-btn.spinning:hover svg { transform: none; }
+@keyframes refresh-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -228,6 +244,25 @@ body {
 }
 
 .invite-banner { background: var(--blue-soft); border: 1px solid rgba(74,158,255,0.3); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--blue); }
+
+/* Connected-client status badges */
+.client-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 3px 8px; border-radius: 999px;
+}
+.client-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; }
+.client-status.online       { background: var(--green-soft);  color: var(--green); }
+.client-status.online::before       { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 1.6s ease-in-out infinite; }
+.client-status.idle         { background: var(--yellow-soft); color: var(--yellow); }
+.client-status.idle::before         { background: var(--yellow); }
+.client-status.lost         { background: var(--accent-soft); color: var(--accent); }
+.client-status.lost::before         { background: var(--accent); }
+.client-status.disconnected { background: rgba(85,85,106,0.2); color: var(--text-muted); }
+.client-status.disconnected::before { background: var(--text-muted); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+tr.client-row.lost td { background: rgba(230,57,70,0.04); }
+tr.client-row.disconnected td { color: var(--text-muted); }
 
 .mobile-toggle { display: none; }
 
@@ -376,6 +411,10 @@ const state = {
   historyPageSize: parseInt(localStorage.getItem('ace_history_page_size')) || 25,
   pbPage: 1,
   pbPageSize: parseInt(localStorage.getItem('ace_pb_page_size')) || 25,
+  // Admin: connected clients
+  adminClients: [],
+  adminClientsServerTime: null,
+  adminClientsTimer: null,
 };
 
 const GROUP_MEMBERS_PAGE_SIZE = 10;
@@ -398,6 +437,7 @@ async function apiFetch(path, options = {}) {
 function logout() {
   state.token = null; state.user = null;
   localStorage.removeItem('ace_token'); localStorage.removeItem('ace_user');
+  if (state.adminClientsTimer) { clearInterval(state.adminClientsTimer); state.adminClientsTimer = null; }
   render();
 }
 
@@ -463,6 +503,14 @@ async function loadAdminUsers() {
   const res = await apiFetch('/admin/users');
   if (res && res.ok) state.adminUsers = await res.json();
 }
+async function loadAdminClients() {
+  const res = await apiFetch('/admin/clients');
+  if (res && res.ok) {
+    const data = await res.json();
+    state.adminClients = data.clients || [];
+    state.adminClientsServerTime = data.server_time;
+  }
+}
 async function loadGroups() {
   const res = await apiFetch('/groups');
   if (res && res.ok) state.groups = await res.json();
@@ -489,7 +537,7 @@ async function loadPageData() {
   if (state.page === 'leaderboard') await loadLeaderboard();
   if (state.page === 'personal-bests') await loadPersonalBests();
   if (state.page === 'progress') await loadProgress();
-  if (state.page === 'admin') await loadAdminUsers();
+  if (state.page === 'admin') { await loadAdminUsers(); await loadAdminClients(); }
   if (state.page === 'groups') await loadGroups();
   if (state.page === 'my-profile') await loadMyProfile();
 }
@@ -741,6 +789,23 @@ function renderPageContent() {
     case 'my-profile':     el.innerHTML = renderProfilePage(); break;
   }
   bindPageEvents();
+  manageAdminClientsTimer();
+}
+
+function manageAdminClientsTimer() {
+  // Poll the connected-clients endpoint every 15s while the admin page is
+  // visible; stop the moment the user navigates away.
+  const isAdmin = state.page === 'admin' && userRole() === 'superadmin';
+  if (isAdmin && !state.adminClientsTimer) {
+    state.adminClientsTimer = setInterval(async () => {
+      if (state.page !== 'admin') return;
+      await loadAdminClients();
+      if (state.page === 'admin') renderPageContent();
+    }, 15_000);
+  } else if (!isAdmin && state.adminClientsTimer) {
+    clearInterval(state.adminClientsTimer);
+    state.adminClientsTimer = null;
+  }
 }
 
 function bindPageEvents() {
@@ -793,6 +858,13 @@ function bindPageEvents() {
       renderPageContent();
     });
   });
+  document.querySelector('.page-refresh-btn[data-refresh]')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.classList.add('spinning');
+    btn.disabled = true;
+    try { await loadPageData(); }
+    finally { renderPageContent(); }
+  });
   document.getElementById('export-csv')?.addEventListener('click', () => window.open(`${API}/export/csv`,'_blank'));
   document.getElementById('export-json')?.addEventListener('click', () => window.open(`${API}/export/json`,'_blank'));
   if (state.page === 'progress' && state.progress.length > 0) renderProgressChart();
@@ -831,6 +903,16 @@ function bindPageEvents() {
       if (!confirm('Delete this user and all their laps?')) return;
       const res = await apiFetch(`/admin/users/${btn.dataset.uid}`, { method: 'DELETE' });
       if (res && res.ok) { await loadAdminUsers(); renderPageContent(); }
+    });
+  });
+  document.getElementById('clients-refresh-btn')?.addEventListener('click', async () => {
+    await loadAdminClients(); renderPageContent();
+  });
+  document.querySelectorAll('.admin-client-forget').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Forget this client session? It will reappear if the tray sends another heartbeat.')) return;
+      const res = await apiFetch(`/admin/clients/${btn.dataset.cid}`, { method: 'DELETE' });
+      if (res && res.ok) { await loadAdminClients(); renderPageContent(); }
     });
   });
 
@@ -1058,7 +1140,7 @@ function renderHistoryPage() {
   const page = Math.min(Math.max(1, state.historyPage), totalPages);
   const paged = state.laptimes.slice((page - 1) * pageSize, page * pageSize);
   return `
-    <div class="page-header fade-in"><h2>Lap History</h2><p>All recorded laps</p></div>
+    ${renderPageHeader('Lap History', 'All recorded laps', { refresh: true })}
     ${renderFilters()}
     ${total===0 ? renderEmpty('No laps recorded yet') : `
     <div class="card fade-in">
@@ -1089,7 +1171,7 @@ function renderHistoryPage() {
 // ─── Leaderboard page ───────────────────────────────────────────────
 function renderLeaderboardPage() {
   return `
-    <div class="page-header fade-in"><h2>Leaderboard</h2><p>Who's fastest?</p></div>
+    ${renderPageHeader('Leaderboard', "Who's fastest?", { refresh: true })}
     ${renderFilters(['track','car'])}
     ${state.leaderboard.length===0 ? renderEmpty('No data for this combo yet') : `
     <div class="card fade-in">
@@ -1125,7 +1207,7 @@ function renderPBPage() {
   const page = Math.min(Math.max(1, state.pbPage), totalPages);
   const paged = state.personalBests.slice((page - 1) * pageSize, page * pageSize);
   return `
-    <div class="page-header fade-in"><h2>Personal Bests</h2><p>Best times per track &amp; car combo</p></div>
+    ${renderPageHeader('Personal Bests', 'Best times per track & car combo', { refresh: true })}
     <div class="filter-bar fade-in">
       <select class="filter-select" data-filter="user_id">
         <option value="">My PBs</option>
@@ -1161,7 +1243,7 @@ function renderPBPage() {
 function renderProgressPage() {
   const noFilters = !state.filters.track || !state.filters.car;
   return `
-    <div class="page-header fade-in"><h2>Progress</h2><p>Track improvement over time</p></div>
+    ${renderPageHeader('Progress', 'Track improvement over time', { refresh: true })}
     ${renderFilters(['track','car','user_id'])}
     ${noFilters ? `
       <div class="empty-state fade-in">
@@ -1258,12 +1340,94 @@ function renderProfilePage() {
 }
 
 // ─── Admin page ─────────────────────────────────────────────────────
+// Server times are returned without timezone — treat them as UTC.
+function parseServerTime(s) {
+  if (!s) return null;
+  const iso = s.includes('T') ? s : s.replace(' ', 'T');
+  return new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+}
+function timeAgo(secs) {
+  if (secs == null || isNaN(secs)) return '—';
+  if (secs < 0) secs = 0;
+  if (secs < 60)    return `${Math.round(secs)}s ago`;
+  if (secs < 3600)  return `${Math.round(secs/60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs/3600)}h ago`;
+  return `${Math.round(secs/86400)}d ago`;
+}
+function clientStatus(c, nowMs) {
+  if (c.disconnected_at) return { key: 'disconnected', label: 'Disconnected' };
+  const last = parseServerTime(c.last_seen_at);
+  if (!last) return { key: 'lost', label: 'Lost' };
+  const ageSec = (nowMs - last.getTime()) / 1000;
+  if (ageSec <= 60)  return { key: 'online', label: 'Online' };
+  if (ageSec <= 300) return { key: 'idle',   label: 'Idle' };
+  return { key: 'lost', label: 'Lost' };
+}
+
+function renderConnectedClients() {
+  // Use server time as "now" so clock skew between admin browser and server
+  // doesn't make every client look offline.
+  const serverNow = parseServerTime(state.adminClientsServerTime);
+  const nowMs = serverNow ? serverNow.getTime() : Date.now();
+  const clients = state.adminClients || [];
+  const online = clients.filter(c => clientStatus(c, nowMs).key === 'online').length;
+  const lost   = clients.filter(c => clientStatus(c, nowMs).key === 'lost').length;
+  return `
+    <div class="card fade-in" style="animation-delay:0.05s;">
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div>
+          <span class="card-title">Connected Clients</span>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:2px;">
+            ${online} online · ${lost} lost · ${clients.length} total
+            <span style="margin-left:10px;">Auto-refreshes every 15s</span>
+          </div>
+        </div>
+        <button class="btn btn-sm btn-secondary" id="clients-refresh-btn">Refresh now</button>
+      </div>
+      ${clients.length === 0 ? `
+        <div style="padding:28px 12px;text-align:center;color:var(--text-muted);font-size:13px;">
+          No clients have checked in yet. Start the tray app and connect it to this server.
+        </div>
+      ` : `
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr>
+            <th>Status</th><th>User</th><th>Hostname</th><th>Version</th><th>Platform</th>
+            <th>Last seen</th><th>Connected since</th><th>IP</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${clients.map(c => {
+              const st = clientStatus(c, nowMs);
+              const last = parseServerTime(c.last_seen_at);
+              const started = parseServerTime(c.started_at);
+              const ageSec = last ? (nowMs - last.getTime()) / 1000 : null;
+              return `<tr class="client-row ${st.key}">
+                <td data-label="Status"><span class="client-status ${st.key}">${st.label}</span></td>
+                <td data-label="User"><strong>${escapeHtml(c.display_name)}</strong>
+                  <div style="color:var(--text-muted);font-family:var(--mono);font-size:11px;">@${escapeHtml(c.username)}</div></td>
+                <td data-label="Hostname" style="font-family:var(--mono);font-size:12px;">${escapeHtml(c.hostname || '—')}</td>
+                <td data-label="Version" style="color:var(--text-secondary);font-size:12px;">${escapeHtml(c.app_version || '—')}</td>
+                <td data-label="Platform" style="color:var(--text-secondary);font-size:12px;">${escapeHtml(c.platform || '—')}</td>
+                <td data-label="Last seen" title="${last?last.toLocaleString():''}" style="font-size:12px;">${timeAgo(ageSec)}</td>
+                <td data-label="Since" style="color:var(--text-secondary);font-size:12px;">${started?started.toLocaleString():'—'}</td>
+                <td data-label="IP" style="font-family:var(--mono);font-size:11px;color:var(--text-secondary);">${escapeHtml(c.ip_address || '—')}</td>
+                <td><button class="btn btn-sm btn-danger admin-client-forget" data-cid="${c.id}" title="Forget this client">×</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>`;
+}
+
 function renderAdminPage() {
   if (userRole()!=='superadmin') return `<div class="page-header fade-in"><h2>Admin Panel</h2></div>${renderEmpty('Access denied')}`;
   return `
-    <div class="page-header fade-in"><h2>Admin Panel</h2><p>Manage users and global roles</p></div>
+    <div class="page-header fade-in"><h2>Admin Panel</h2><p>Manage users and tray clients</p></div>
+    ${renderConnectedClients()}
     ${state.adminUsers.length===0 ? renderEmpty('No users found') : `
     <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Users</span></div>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Display Name</th><th>Username</th><th>Role</th><th>Joined</th><th>Actions</th></tr></thead>
@@ -1455,6 +1619,18 @@ function renderFilters(fields=['track','car','user_id']) {
     </div>`;
 }
 
+function renderPageHeader(title, subtitle, opts = {}) {
+  const refresh = opts.refresh
+    ? `<button class="page-refresh-btn" data-refresh="1" aria-label="Refresh" title="Refresh">${svgIcon('refresh')}</button>`
+    : '';
+  return `<div class="page-header fade-in">
+      <div class="page-header-row">
+        <div class="page-header-text"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div>
+        ${refresh}
+      </div>
+    </div>`;
+}
+
 function renderEmpty(msg) {
   return `<div class="empty-state fade-in">
     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
@@ -1518,6 +1694,7 @@ function svgIcon(name) {
     shield:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     users:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>',
     user:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    refresh:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>',
   };
   return icons[name] || '';
 }

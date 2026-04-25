@@ -9,6 +9,9 @@ import os
 import re
 import json
 import time
+import uuid
+import socket
+import platform
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -77,6 +80,7 @@ class APIClient:
     def __init__(self):
         self.base_url = ""
         self.token = ""
+        self.user_agent = f"ace-tray/{APP_VERSION} ({platform.system()} {platform.release()})"
 
     def configure(self, base_url: str, token: str):
         self.base_url = base_url.rstrip("/")
@@ -85,12 +89,18 @@ class APIClient:
     def _headers(self):
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.token}"
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": self.user_agent,
         }
 
     def login(self, server_url: str, username: str, password: str) -> dict:
         url = f"{server_url.rstrip('/')}/api/auth/login"
-        resp = requests.post(url, json={"username": username, "password": password}, timeout=10)
+        resp = requests.post(
+            url,
+            json={"username": username, "password": password},
+            headers={"User-Agent": self.user_agent},
+            timeout=10,
+        )
         resp.raise_for_status()
         data = resp.json()
         self.base_url = server_url.rstrip("/")
@@ -124,6 +134,28 @@ class APIClient:
             return resp.status_code == 200
         except Exception:
             return False
+
+    def send_heartbeat(self, client_id: str) -> bool:
+        if not self.base_url or not self.token:
+            return False
+        url = f"{self.base_url}/api/client/heartbeat"
+        payload = {
+            "client_id": client_id,
+            "hostname": socket.gethostname(),
+            "platform": f"{platform.system()} {platform.release()}",
+            "app_version": APP_VERSION,
+        }
+        resp = requests.post(url, json=payload, headers=self._headers(), timeout=5)
+        return resp.status_code == 200
+
+    def send_disconnect(self, client_id: str) -> bool:
+        if not self.base_url or not self.token:
+            return False
+        url = f"{self.base_url}/api/client/disconnect"
+        resp = requests.post(
+            url, json={"client_id": client_id}, headers=self._headers(), timeout=3
+        )
+        return resp.status_code == 200
 
 
 # ─── Log Watcher Thread ─────────────────────────────────────────────
@@ -658,6 +690,13 @@ class MainWindow(QMainWindow):
         self._current_track = ""
         self._current_car = ""
 
+        # Persistent client identifier so the backend can distinguish this
+        # tray instance from any other (same user can run several).
+        self.client_id = self.settings.value("client_id", "")
+        if not self.client_id:
+            self.client_id = str(uuid.uuid4())
+            self.settings.setValue("client_id", self.client_id)
+
         # Restore saved credentials
         saved_url = self.settings.value("server_url", "")
         saved_token = self.settings.value("token", "")
@@ -669,8 +708,16 @@ class MainWindow(QMainWindow):
         self._setup_tray()
         self._start_watcher()
 
+        # Heartbeat — pings backend every 30s while we have a token, so the
+        # admin "Connected Clients" view can tell us apart from a lost one.
+        self.heartbeat_timer = QTimer(self)
+        self.heartbeat_timer.setInterval(30_000)
+        self.heartbeat_timer.timeout.connect(self._send_heartbeat)
+        self.heartbeat_timer.start()
+
         # Check connection on start
         QTimer.singleShot(500, self._check_connection)
+        QTimer.singleShot(1500, self._send_heartbeat)
 
     # ── UI Construction ──────────────────────────────────────────────
 
@@ -1092,6 +1139,9 @@ class MainWindow(QMainWindow):
             self._load_meta()
             self._refresh_recent()
 
+            # Register this tray instance with the server
+            self._send_heartbeat()
+
             # Submit any pending laps
             if self.pending_laps:
                 for lap in self.pending_laps:
@@ -1125,6 +1175,16 @@ class MainWindow(QMainWindow):
             self.connection_status.setText("Not connected")
             self.connection_status.setStyleSheet("color: #e63946; font-size: 12px; font-weight: 600;")
             self.status_label.setText("Not connected – go to Settings to connect")
+
+    def _send_heartbeat(self):
+        if not self.api.token or not self.api.base_url:
+            return
+        try:
+            self.api.send_heartbeat(self.client_id)
+        except Exception:
+            # Heartbeat failures are expected when the network/server is
+            # unreachable; the admin view will surface that as "Lost".
+            pass
 
     def _submit_lap(self, lap: LapRecord):
         try:
@@ -1274,6 +1334,12 @@ class MainWindow(QMainWindow):
     def _quit_app(self):
         if self.watcher:
             self.watcher.stop()
+        if hasattr(self, "heartbeat_timer"):
+            self.heartbeat_timer.stop()
+        try:
+            self.api.send_disconnect(self.client_id)
+        except Exception:
+            pass
         self.tray_icon.hide()
         QApplication.quit()
 
