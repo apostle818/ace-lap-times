@@ -86,6 +86,21 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_laptimes_user ON laptimes(user_id);
         CREATE INDEX IF NOT EXISTS idx_laptimes_track_car ON laptimes(track, car);
+        CREATE TABLE IF NOT EXISTS client_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL,
+            hostname TEXT DEFAULT '',
+            platform TEXT DEFAULT '',
+            app_version TEXT DEFAULT '',
+            user_agent TEXT DEFAULT '',
+            ip_address TEXT DEFAULT '',
+            started_at TEXT DEFAULT (datetime('now')),
+            last_seen_at TEXT DEFAULT (datetime('now')),
+            disconnected_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_sessions_last_seen ON client_sessions(last_seen_at);
     """)
     # Migrations
     user_cols = [r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()]
@@ -307,6 +322,94 @@ def admin_delete_user(user_id):
     db.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
     db.execute("DELETE FROM laptimes WHERE user_id = ?", (user_id,))
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    db.commit()
+    return jsonify({"message": "Deleted"})
+
+# ─── Client session tracking ─────────────────────────────────────────
+
+def _client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or ""
+
+@app.route("/api/client/heartbeat", methods=["POST"])
+@token_required
+def client_heartbeat():
+    data = request.get_json(silent=True) or {}
+    client_id = (data.get("client_id") or "").strip()
+    if not client_id:
+        return jsonify({"error": "client_id required"}), 400
+    hostname = (data.get("hostname") or "").strip()[:200]
+    platform = (data.get("platform") or "").strip()[:100]
+    app_version = (data.get("app_version") or "").strip()[:50]
+    user_agent = request.headers.get("User-Agent", "")[:300]
+    ip = _client_ip()
+    now = datetime.utcnow().isoformat(timespec="seconds")
+
+    db = get_db()
+    existing = db.execute(
+        "SELECT id, user_id FROM client_sessions WHERE client_id = ?", (client_id,)
+    ).fetchone()
+    if existing:
+        db.execute(
+            """UPDATE client_sessions
+               SET user_id = ?, hostname = ?, platform = ?, app_version = ?,
+                   user_agent = ?, ip_address = ?, last_seen_at = ?, disconnected_at = NULL
+               WHERE client_id = ?""",
+            (g.current_user_id, hostname, platform, app_version,
+             user_agent, ip, now, client_id),
+        )
+    else:
+        db.execute(
+            """INSERT INTO client_sessions
+               (client_id, user_id, hostname, platform, app_version, user_agent,
+                ip_address, started_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (client_id, g.current_user_id, hostname, platform, app_version,
+             user_agent, ip, now, now),
+        )
+    db.commit()
+    return jsonify({"ok": True, "server_time": now})
+
+@app.route("/api/client/disconnect", methods=["POST"])
+@token_required
+def client_disconnect():
+    data = request.get_json(silent=True) or {}
+    client_id = (data.get("client_id") or "").strip()
+    if not client_id:
+        return jsonify({"error": "client_id required"}), 400
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    db = get_db()
+    db.execute(
+        "UPDATE client_sessions SET disconnected_at = ?, last_seen_at = ? WHERE client_id = ? AND user_id = ?",
+        (now, now, client_id, g.current_user_id),
+    )
+    db.commit()
+    return jsonify({"ok": True})
+
+@app.route("/api/admin/clients", methods=["GET"])
+@superadmin_required
+def admin_list_clients():
+    db = get_db()
+    rows = db.execute(
+        """SELECT c.id, c.client_id, c.user_id, c.hostname, c.platform, c.app_version,
+                  c.user_agent, c.ip_address, c.started_at, c.last_seen_at, c.disconnected_at,
+                  u.display_name, u.username
+           FROM client_sessions c
+           JOIN users u ON c.user_id = u.id
+           ORDER BY c.last_seen_at DESC"""
+    ).fetchall()
+    return jsonify({
+        "server_time": datetime.utcnow().isoformat(timespec="seconds"),
+        "clients": [dict(r) for r in rows],
+    })
+
+@app.route("/api/admin/clients/<int:session_id>", methods=["DELETE"])
+@superadmin_required
+def admin_delete_client(session_id):
+    db = get_db()
+    db.execute("DELETE FROM client_sessions WHERE id = ?", (session_id,))
     db.commit()
     return jsonify({"message": "Deleted"})
 
