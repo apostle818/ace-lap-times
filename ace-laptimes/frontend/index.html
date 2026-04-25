@@ -102,6 +102,22 @@ body {
 .page-header { margin-bottom: 28px; }
 .page-header h2 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
 .page-header p { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
+.page-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.page-header-row > .page-header-text { min-width: 0; }
+.page-refresh-btn {
+  flex-shrink: 0; width: 38px; height: 38px; padding: 0;
+  border-radius: var(--radius-sm); background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-secondary); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: all 0.15s ease;
+}
+.page-refresh-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--text-muted); }
+.page-refresh-btn:disabled { opacity: 0.6; cursor: wait; }
+.page-refresh-btn svg { width: 18px; height: 18px; transition: transform 0.2s ease; }
+.page-refresh-btn:hover svg { transform: rotate(45deg); }
+.page-refresh-btn.spinning svg { animation: refresh-spin 0.8s linear infinite; }
+.page-refresh-btn.spinning:hover svg { transform: none; }
+@keyframes refresh-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
@@ -842,6 +858,13 @@ function bindPageEvents() {
       renderPageContent();
     });
   });
+  document.querySelector('.page-refresh-btn[data-refresh]')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.classList.add('spinning');
+    btn.disabled = true;
+    try { await loadPageData(); }
+    finally { renderPageContent(); }
+  });
   document.getElementById('export-csv')?.addEventListener('click', () => window.open(`${API}/export/csv`,'_blank'));
   document.getElementById('export-json')?.addEventListener('click', () => window.open(`${API}/export/json`,'_blank'));
   if (state.page === 'progress' && state.progress.length > 0) renderProgressChart();
@@ -1117,7 +1140,7 @@ function renderHistoryPage() {
   const page = Math.min(Math.max(1, state.historyPage), totalPages);
   const paged = state.laptimes.slice((page - 1) * pageSize, page * pageSize);
   return `
-    <div class="page-header fade-in"><h2>Lap History</h2><p>All recorded laps</p></div>
+    ${renderPageHeader('Lap History', 'All recorded laps', { refresh: true })}
     ${renderFilters()}
     ${total===0 ? renderEmpty('No laps recorded yet') : `
     <div class="card fade-in">
@@ -1148,7 +1171,7 @@ function renderHistoryPage() {
 // ─── Leaderboard page ───────────────────────────────────────────────
 function renderLeaderboardPage() {
   return `
-    <div class="page-header fade-in"><h2>Leaderboard</h2><p>Who's fastest?</p></div>
+    ${renderPageHeader('Leaderboard', "Who's fastest?", { refresh: true })}
     ${renderFilters(['track','car'])}
     ${state.leaderboard.length===0 ? renderEmpty('No data for this combo yet') : `
     <div class="card fade-in">
@@ -1184,7 +1207,7 @@ function renderPBPage() {
   const page = Math.min(Math.max(1, state.pbPage), totalPages);
   const paged = state.personalBests.slice((page - 1) * pageSize, page * pageSize);
   return `
-    <div class="page-header fade-in"><h2>Personal Bests</h2><p>Best times per track &amp; car combo</p></div>
+    ${renderPageHeader('Personal Bests', 'Best times per track & car combo', { refresh: true })}
     <div class="filter-bar fade-in">
       <select class="filter-select" data-filter="user_id">
         <option value="">My PBs</option>
@@ -1220,7 +1243,7 @@ function renderPBPage() {
 function renderProgressPage() {
   const noFilters = !state.filters.track || !state.filters.car;
   return `
-    <div class="page-header fade-in"><h2>Progress</h2><p>Track improvement over time</p></div>
+    ${renderPageHeader('Progress', 'Track improvement over time', { refresh: true })}
     ${renderFilters(['track','car','user_id'])}
     ${noFilters ? `
       <div class="empty-state fade-in">
@@ -1596,6 +1619,18 @@ function renderFilters(fields=['track','car','user_id']) {
     </div>`;
 }
 
+function renderPageHeader(title, subtitle, opts = {}) {
+  const refresh = opts.refresh
+    ? `<button class="page-refresh-btn" data-refresh="1" aria-label="Refresh" title="Refresh">${svgIcon('refresh')}</button>`
+    : '';
+  return `<div class="page-header fade-in">
+      <div class="page-header-row">
+        <div class="page-header-text"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div>
+        ${refresh}
+      </div>
+    </div>`;
+}
+
 function renderEmpty(msg) {
   return `<div class="empty-state fade-in">
     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
@@ -1659,6 +1694,7 @@ function svgIcon(name) {
     shield:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     users:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>',
     user:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+    refresh:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>',
   };
   return icons[name] || '';
 }
