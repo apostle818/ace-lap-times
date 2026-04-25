@@ -207,8 +207,25 @@ body {
 .inline-select { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-family: var(--font); font-size: 12px; padding: 4px 8px; outline: none; cursor: pointer; }
 .inline-select option { background: var(--bg-card); }
 
-.pagination { display: flex; align-items: center; gap: 8px; justify-content: center; padding-top: 16px; }
+.pagination { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding-top: 16px; flex-wrap: wrap; }
 .pagination-info { font-size: 12px; color: var(--text-muted); }
+.pagination-nav { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pagination-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+.page-btn {
+  min-width: 32px; height: 32px; padding: 0 10px;
+  border-radius: var(--radius-sm); background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-secondary); cursor: pointer; font-size: 13px; font-weight: 500;
+  font-family: var(--font); transition: all 0.15s ease;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.page-btn:hover:not(:disabled) { background: var(--bg-card-hover); color: var(--text-primary); border-color: var(--text-muted); }
+.page-btn.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.page-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.page-ellipsis { color: var(--text-muted); padding: 0 4px; font-size: 13px; user-select: none; }
+@media (max-width: 600px) {
+  .pagination { justify-content: center; }
+  .pagination-info { order: 3; width: 100%; text-align: center; }
+}
 
 .invite-banner { background: var(--blue-soft); border: 1px solid rgba(74,158,255,0.3); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--blue); }
 
@@ -354,9 +371,15 @@ const state = {
   groupMembersPage: 1,
   pendingInvite: null,
   inviteInfo: null,
+  // Pagination for lap history & personal bests
+  historyPage: 1,
+  historyPageSize: parseInt(localStorage.getItem('ace_history_page_size')) || 25,
+  pbPage: 1,
+  pbPageSize: parseInt(localStorage.getItem('ace_pb_page_size')) || 25,
 };
 
 const GROUP_MEMBERS_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 25, 50];
 const WEATHER_OPTIONS = ['Clear', 'Cloudy', 'Light Rain', 'Heavy Rain', 'Fog', 'Snow', 'Storm', 'Dynamic'];
 const WEATHER_ICONS = { 'Clear':'☀️','Cloudy':'☁️','Light Rain':'🌦️','Heavy Rain':'🌧️','Fog':'🌫️','Snow':'❄️','Storm':'⛈️','Dynamic':'🔄' };
 const DRIVER_COLORS = ['#e63946','#4a9eff','#2ec866','#f4a623','#a855f7','#ff6b9d','#06d6a0','#ffd166'];
@@ -733,7 +756,41 @@ function bindPageEvents() {
   document.querySelectorAll('.filter-select').forEach(el => {
     el.addEventListener('change', () => {
       state.filters[el.dataset.filter] = el.value;
+      state.historyPage = 1;
+      state.pbPage = 1;
       loadPageData().then(() => renderPageContent());
+    });
+  });
+
+  // List pagination (history & personal bests)
+  document.querySelectorAll('[data-page-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.pageAction;
+      const dash = action.lastIndexOf('-');
+      const prefix = action.slice(0, dash);
+      const op = action.slice(dash + 1);
+      const pageKey = prefix === 'history' ? 'historyPage' : 'pbPage';
+      const sizeKey = prefix === 'history' ? 'historyPageSize' : 'pbPageSize';
+      const total = prefix === 'history' ? state.laptimes.length : state.personalBests.length;
+      const totalPages = Math.max(1, Math.ceil(total / state[sizeKey]));
+      if (op === 'prev')      state[pageKey] = Math.max(1, state[pageKey] - 1);
+      else if (op === 'next') state[pageKey] = Math.min(totalPages, state[pageKey] + 1);
+      else if (op === 'go')   state[pageKey] = parseInt(btn.dataset.page);
+      renderPageContent();
+    });
+  });
+  document.querySelectorAll('[data-page-size]').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const prefix = sel.dataset.pageSize;
+      const size = parseInt(sel.value);
+      if (prefix === 'history') {
+        state.historyPageSize = size; state.historyPage = 1;
+        localStorage.setItem('ace_history_page_size', String(size));
+      } else if (prefix === 'pb') {
+        state.pbPageSize = size; state.pbPage = 1;
+        localStorage.setItem('ace_pb_page_size', String(size));
+      }
+      renderPageContent();
     });
   });
   document.getElementById('export-csv')?.addEventListener('click', () => window.open(`${API}/export/csv`,'_blank'));
@@ -995,16 +1052,21 @@ async function handleRecord() {
 
 // ─── History page ───────────────────────────────────────────────────
 function renderHistoryPage() {
+  const total = state.laptimes.length;
+  const pageSize = state.historyPageSize;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(1, state.historyPage), totalPages);
+  const paged = state.laptimes.slice((page - 1) * pageSize, page * pageSize);
   return `
     <div class="page-header fade-in"><h2>Lap History</h2><p>All recorded laps</p></div>
     ${renderFilters()}
-    ${state.laptimes.length===0 ? renderEmpty('No laps recorded yet') : `
+    ${total===0 ? renderEmpty('No laps recorded yet') : `
     <div class="card fade-in">
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Driver</th><th>Track</th><th>Car</th><th>Time</th><th>Weather</th><th>Date</th><th></th></tr></thead>
           <tbody>
-            ${state.laptimes.map(lap => {
+            ${paged.map(lap => {
               const idx = state.users.findIndex(u=>u.id===lap.user_id);
               const canDel = lap.user_id===state.user?.id || userRole()==='superadmin' || isGroupAdmin();
               return `<tr>
@@ -1020,6 +1082,7 @@ function renderHistoryPage() {
           </tbody>
         </table>
       </div>
+      ${renderPagination('history', page, pageSize, total, 'laps')}
     </div>`}`;
 }
 
@@ -1056,6 +1119,11 @@ function renderLeaderboardPage() {
 
 // ─── Personal bests page ────────────────────────────────────────────
 function renderPBPage() {
+  const total = state.personalBests.length;
+  const pageSize = state.pbPageSize;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(1, state.pbPage), totalPages);
+  const paged = state.personalBests.slice((page - 1) * pageSize, page * pageSize);
   return `
     <div class="page-header fade-in"><h2>Personal Bests</h2><p>Best times per track &amp; car combo</p></div>
     <div class="filter-bar fade-in">
@@ -1064,9 +1132,9 @@ function renderPBPage() {
         ${state.users.map(u=>`<option value="${u.id}" ${state.filters.user_id==u.id?'selected':''}>${escapeHtml(u.display_name)}</option>`).join('')}
       </select>
     </div>
-    ${state.personalBests.length===0 ? renderEmpty('No personal bests yet') : `
+    ${total===0 ? renderEmpty('No personal bests yet') : `
     <div class="stats-row fade-in">
-      <div class="stat-card"><div class="stat-label">Track/Car Combos</div><div class="stat-value accent">${state.personalBests.length}</div></div>
+      <div class="stat-card"><div class="stat-label">Track/Car Combos</div><div class="stat-value accent">${total}</div></div>
       <div class="stat-card"><div class="stat-label">Total Laps</div><div class="stat-value blue">${state.personalBests.reduce((s,r)=>s+r.attempts,0)}</div></div>
       <div class="stat-card"><div class="stat-label">Best Overall</div><div class="stat-value green">${msToLaptime(Math.min(...state.personalBests.map(r=>r.best_time)))}</div></div>
     </div>
@@ -1075,7 +1143,7 @@ function renderPBPage() {
         <table class="data-table">
           <thead><tr><th>Track</th><th>Car</th><th>Best Time</th><th>Attempts</th></tr></thead>
           <tbody>
-            ${state.personalBests.map(r=>`
+            ${paged.map(r=>`
               <tr>
                 <td data-label="Track">${escapeHtml(r.track)}</td>
                 <td data-label="Car">${escapeHtml(r.car)}</td>
@@ -1085,6 +1153,7 @@ function renderPBPage() {
           </tbody>
         </table>
       </div>
+      ${renderPagination('pb', page, pageSize, total, 'combos')}
     </div>`}`;
 }
 
@@ -1391,6 +1460,46 @@ function renderEmpty(msg) {
     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
     <h3>${msg}</h3><p>Start recording laps to see data here</p>
   </div>`;
+}
+
+// Compact page list with ellipsis: e.g. [1, '…', 4, 5, 6, '…', 20]
+function paginationPageList(current, total) {
+  if (total <= 7) return Array.from({length: total}, (_, i) => i + 1);
+  const pages = [1];
+  if (current > 3) pages.push('...');
+  for (let p = Math.max(2, current - 1); p <= Math.min(total - 1, current + 1); p++) pages.push(p);
+  if (current < total - 2) pages.push('...');
+  pages.push(total);
+  return pages;
+}
+
+function renderPagination(prefix, page, pageSize, total, itemLabel) {
+  if (total === 0) return '';
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize + 1;
+  const end = Math.min(safePage * pageSize, total);
+  const pages = paginationPageList(safePage, totalPages);
+  const label = itemLabel || 'items';
+  return `
+    <div class="pagination" role="navigation" aria-label="Pagination">
+      <div class="pagination-info">Showing <strong>${start}–${end}</strong> of <strong>${total}</strong> ${escapeHtml(label)}</div>
+      ${totalPages > 1 ? `
+      <div class="pagination-nav">
+        <button class="page-btn" data-page-action="${prefix}-prev" ${safePage<=1?'disabled':''} aria-label="Previous page">‹</button>
+        ${pages.map(p => p === '...'
+          ? `<span class="page-ellipsis">…</span>`
+          : `<button class="page-btn ${p===safePage?'active':''}" data-page-action="${prefix}-go" data-page="${p}" ${p===safePage?'aria-current="page"':''} aria-label="Page ${p}">${p}</button>`
+        ).join('')}
+        <button class="page-btn" data-page-action="${prefix}-next" ${safePage>=totalPages?'disabled':''} aria-label="Next page">›</button>
+      </div>` : '<div></div>'}
+      <div class="pagination-size">
+        <label for="${prefix}-page-size">Per page</label>
+        <select id="${prefix}-page-size" class="inline-select" data-page-size="${prefix}">
+          ${PAGE_SIZE_OPTIONS.map(s => `<option value="${s}" ${s===pageSize?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>`;
 }
 
 // ─── SVG Icons ──────────────────────────────────────────────────────
