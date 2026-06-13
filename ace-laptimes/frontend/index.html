@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ACE Lap Tracker</title>
+<title>ALT — Assetto Corsa Evo Lap Tracker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23e63946'/><stop offset='1' stop-color='%23ff6b6b'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><g fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M12.5 4 H19.5'/><path d='M16 4 V9.4'/><path d='M22.6 9.4 L24.4 7.6'/><circle cx='16' cy='18' r='8.6'/><path d='M16 18 L19.6 14.4'/></g></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
@@ -68,7 +69,27 @@ body {
   background: linear-gradient(135deg, var(--accent), #ff6b6b);
   -webkit-background-clip: text; -webkit-text-fill-color: transparent;
 }
-.logo-area .subtitle { font-size: 11px; color: var(--text-muted); letter-spacing: 1px; margin-top: 4px; }
+.logo-area .subtitle { font-size: 11px; color: var(--text-muted); letter-spacing: 1px; margin-top: 6px; }
+
+/* ── ALT brand lockup ── */
+.brand-lockup { display: inline-flex; align-items: center; gap: 11px; }
+.logo-mark {
+  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--accent), #ff6b6b);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.logo-mark svg { width: 23px; height: 23px; display: block; }
+.logo-mark path { fill: none; stroke: #fff; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.brand-word {
+  font-family: 'Outfit', sans-serif; font-weight: 900; letter-spacing: 3px; font-size: 21px; line-height: 1;
+  background: linear-gradient(135deg, var(--accent), #ff6b6b);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.brand-lg { justify-content: center; }
+.brand-lg .logo-mark { width: 46px; height: 46px; border-radius: 12px; }
+.brand-lg .logo-mark svg { width: 31px; height: 31px; }
+.brand-lg .brand-word { font-size: 31px; letter-spacing: 4px; }
 
 .nav-section { padding: 16px 12px; flex: 1; overflow-y: auto; }
 .nav-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); padding: 0 8px; margin-bottom: 8px; }
@@ -558,6 +579,11 @@ function render() {
   }
 }
 
+// ─── Brand ──────────────────────────────────────────────────────────
+const LOGO_MARK = `<span class="logo-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12.5 4 H19.5"/><path d="M16 4 V9.4"/><path d="M22.6 9.4 L24.4 7.6"/><circle cx="16" cy="18" r="8.6"/><path d="M16 18 L19.6 14.4"/></g></svg></span>`;
+const BRAND_LOCKUP = `<span class="brand-lockup">${LOGO_MARK}<span class="brand-word">ALT</span></span>`;
+const BRAND_LOCKUP_LG = `<span class="brand-lockup brand-lg">${LOGO_MARK}<span class="brand-word">ALT</span></span>`;
+
 // ─── Login ──────────────────────────────────────────────────────────
 let isRegister = false;
 
@@ -565,7 +591,7 @@ function renderLogin() {
   return `
     <div class="login-wrapper">
       <div class="login-box fade-in">
-        <h1>ACE Laps</h1>
+        ${BRAND_LOCKUP_LG}
         <p class="login-sub">Assetto Corsa Evo Lap Tracker</p>
         ${state.inviteInfo ? `
           <div class="invite-banner">
@@ -614,7 +640,7 @@ function renderInvitePage() {
     return `
       <div class="login-wrapper">
         <div class="login-box fade-in">
-          <h1>ACE Laps</h1>
+          ${BRAND_LOCKUP_LG}
           <div class="error-msg" style="margin-top: 20px;">Invalid or expired invite link.</div>
           <button class="btn btn-secondary" id="skip-invite-btn" style="width:100%;justify-content:center;margin-top:16px;">Go to App</button>
         </div>
@@ -623,7 +649,7 @@ function renderInvitePage() {
   return `
     <div class="login-wrapper">
       <div class="login-box fade-in">
-        <h1>ACE Laps</h1>
+        ${BRAND_LOCKUP_LG}
         <p class="login-sub">You've been invited to join a group</p>
         <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:20px;text-align:center;margin:20px 0;">
           <div style="font-size:20px;font-weight:800;">${escapeHtml(state.inviteInfo.group_name)}</div>
@@ -685,7 +711,7 @@ function renderApp() {
     <div class="overlay-backdrop" id="overlay-backdrop"></div>
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
-        <div class="logo-area"><h1>ACE Laps</h1><div class="subtitle">Assetto Corsa Evo</div></div>
+        <div class="logo-area">${BRAND_LOCKUP}<div class="subtitle">Assetto Corsa Evo</div></div>
         <nav class="nav-section">
           <div class="nav-label">Menu</div>
           ${pages.map(p => `<div class="nav-item${state.page===p.id?' active':''}" data-page="${p.id}">${p.icon} ${p.label}</div>`).join('')}
