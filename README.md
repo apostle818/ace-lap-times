@@ -91,10 +91,11 @@ The tray app parses the ACE game log in real time. It handles two formats:
 Split completed for car <your-uuid>: (37170 ms, splitindex 0) lap:1
 ```
 
-**Practice mode** — splits are logged without car IDs (solo session):
+**Practice mode** (including Time Attack) — splits are logged without car IDs (solo session):
 ```
-On Split start 0 end 0 id 0 splittime 65505
+On Split start false end false id 0 splittime 65505
 ```
+The `start`/`end` fields were integers on ACE 0.5/0.6 and became booleans on ACE 0.7; the parser handles both.
 
 Session metadata (track, car, weather) comes from the `Game Started!` log line. Sector times are summed for the total lap time. Partial laps and invalid times are filtered out.
 

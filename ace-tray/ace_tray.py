@@ -38,7 +38,7 @@ import requests
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 ORG_NAME = "ACELaps"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
@@ -171,9 +171,10 @@ class LogWatcher(QThread):
       - Splits:  Split completed for car <uuid>: (<ms> ms, splitindex <N>) lap:<L>
       - Player car identified by UUID; AI cars filtered out.
 
-    PRACTICE MODE (GameModeType_PRACTICE):
+    PRACTICE MODE (GameModeType_PRACTICE, incl. Time Attack):
       - Session: Game Started! ... N seconds @... | <car> | WeatherType_XXX
-      - Splits:  On Split start X end X id <splitindex> splittime <ms>
+      - Splits:  On Split start <flag> end <flag> id <splitindex> splittime <ms>
+                 (<flag> is an int on ACE 0.5/0.6, a bool on ACE 0.7+)
       - No car UUID (solo session); all splits are the player's.
       - Lap boundary: "Lap test evOnLapCompleted N completed"
 
@@ -202,9 +203,12 @@ class LogWatcher(QThread):
         r'Split completed for car\s+([0-9a-f-]+):\s+\((\d+)\s+ms,\s+splitindex\s+(\d+)\)\s+lap:(\d+)'
     )
 
-    # Practice split: no car UUID, different format
+    # Practice split: no car UUID, different format.
+    # ACE 0.5/0.6 logged the start/end fields as integers ("start 0 end 0");
+    # ACE 0.7 changed them to booleans ("start false end true"). Match either
+    # by accepting any non-space token for those two fields.
     RE_SPLIT_PRACTICE = re.compile(
-        r'On Split start \d+ end \d+ id (\d+) splittime (\d+)'
+        r'On Split start \S+ end \S+ id (\d+) splittime (\d+)'
     )
 
     # Lap completion marker (used in practice to know when a lap is done)
