@@ -38,7 +38,7 @@ import requests
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 ORG_NAME = "ACELaps"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
@@ -177,6 +177,13 @@ class LogWatcher(QThread):
                  (<flag> is an int on ACE 0.5/0.6, a bool on ACE 0.7+)
       - No car UUID (solo session); all splits are the player's.
       - Lap boundary: "Lap test evOnLapCompleted N completed"
+      - Valid-lap marker (ACE 0.7+/0.8): "On Split end with all splits, id N"
+        is logged only for genuine complete laps. Out/in-laps and interrupted
+        laps (where the driver idled in a sector, so the sector time balloons)
+        still log every sector and a lap-completed line, but NOT this marker.
+        When the marker is present in a file we require it, which filters those
+        bogus laps out; when it's absent (older ACE) we fall back to the
+        "all sectors present" heuristic.
 
     Both modes: only complete laps (all sectors present) are recorded.
     """
@@ -216,6 +223,13 @@ class LogWatcher(QThread):
         r'Lap test evOnLapCompleted (\d+) completed'
     )
 
+    # Valid-lap marker (ACE 0.7+/0.8): logged only when a genuine complete lap
+    # finished. Absent for out/in-laps and interrupted laps. Note this line has
+    # no "start"/"splittime" tokens, so it never matches RE_SPLIT_PRACTICE.
+    RE_SPLIT_ALL = re.compile(
+        r'On Split end with all splits'
+    )
+
     def __init__(self, log_path: str, parent=None):
         super().__init__(parent)
         self.log_path = log_path
@@ -239,6 +253,12 @@ class LogWatcher(QThread):
         # Practice tracking
         self._practice_splits = {}   # {splitindex: ms}
         self._practice_lap_count = 0
+        # Whether this file's ACE version logs the "all splits" valid-lap
+        # marker. Learned once per file (sticky across sessions) so we don't
+        # regress older versions that never emit it.
+        self._practice_marker_mode = False
+        # Whether the valid-lap marker has been seen for the current lap.
+        self._practice_lap_marked = False
 
         self._max_splitindex = 2
         self._current_lap = -1
@@ -354,11 +374,14 @@ class LogWatcher(QThread):
             ).strip()
             self._current_track = track
 
-            # Reset tracking for new session
+            # Reset tracking for new session. Note: _practice_marker_mode is
+            # left untouched — the ACE version doesn't change within a file, so
+            # what we learned in an earlier session still applies here.
             self._race_splits = {}
             self._race_emitted = set()
             self._practice_splits = {}
             self._practice_lap_count = 0
+            self._practice_lap_marked = False
             self._max_splitindex = 2
             self._current_lap = -1
 
@@ -414,6 +437,15 @@ class LogWatcher(QThread):
                 self._emit_lap(total_ms, splits, lap_num)
 
     def _parse_practice(self, line: str):
+        # Valid-lap marker — ACE 0.7+/0.8 logs this only for genuine complete
+        # laps. It arrives with the final sector split, just before the
+        # lap-completed line. Seeing it at all tells us this file's ACE version
+        # emits the marker, so we can start requiring it.
+        if self.RE_SPLIT_ALL.search(line):
+            self._practice_marker_mode = True
+            self._practice_lap_marked = True
+            return
+
         # Collect split times
         match = self.RE_SPLIT_PRACTICE.search(line)
         if match:
@@ -429,10 +461,27 @@ class LogWatcher(QThread):
         if match:
             if self._practice_splits:
                 expected = set(range(self._max_splitindex + 1))
-                if expected.issubset(self._practice_splits.keys()):
-                    # Complete lap — all sectors present
+                has_all_sectors = expected.issubset(self._practice_splits.keys())
+                # On marker-emitting ACE versions, require the marker: it's the
+                # game's own "this was a valid complete lap" signal and rejects
+                # out/in-laps and interrupted laps (idle time inflating a sector)
+                # that still happen to have every sector logged. On older
+                # versions that never emit it, fall back to sectors-present only.
+                marker_ok = self._practice_lap_marked or not self._practice_marker_mode
+                if has_all_sectors and marker_ok:
+                    # Complete lap — all sectors present (and marker seen, if used)
                     total_ms = sum(self._practice_splits[i] for i in range(self._max_splitindex + 1))
                     self._emit_lap(total_ms, dict(self._practice_splits), self._practice_lap_count)
+                elif has_all_sectors and not marker_ok:
+                    # All sectors present but no valid-lap marker — out/in-lap or
+                    # an interrupted lap. Skip it.
+                    logger.info(
+                        f"Skipping unmarked practice lap {self._practice_lap_count} "
+                        f"(no 'all splits' marker; likely out/in-lap or interrupted)"
+                    )
+                    self.status_changed.emit(
+                        "Lap skipped (out/in-lap or interrupted)"
+                    )
                 else:
                     # Partial lap (outlap / cut track) — skip it
                     logger.info(
@@ -444,6 +493,7 @@ class LogWatcher(QThread):
                     )
                 self._practice_lap_count += 1
                 self._practice_splits = {}
+                self._practice_lap_marked = False
 
     def _emit_lap(self, total_ms: int, splits: dict, lap_num: int):
         # Sanity check: between 20s and 20min

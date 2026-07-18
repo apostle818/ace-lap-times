@@ -127,6 +127,12 @@ When all expected splits for a lap arrive, the watcher:
 
 The first lap of a session (outlap / formation lap) typically has an inflated time due to the standing start. The watcher skips lap number `0` (or the first lap index per session, depending on the ACE version) to avoid logging formation laps.
 
+### Practice / Time Attack Valid-Lap Marker (ACE 0.7+/0.8)
+
+In practice and Time Attack sessions, splits are logged without a car UUID (`On Split start … end … id N splittime <ms>`) and a lap boundary is marked by `Lap test evOnLapCompleted N completed`. "All sectors present" is **not** sufficient to trust a lap: out/in-laps and interrupted laps (where the driver idled in a sector, ballooning that sector's time) still log every sector plus a lap-completed line, and would otherwise be recorded as very slow laps.
+
+ACE 0.7+/0.8 additionally logs `On Split end with all splits, id N` **only** for genuine complete laps. The watcher requires this marker on any file where it appears (learned once per file, sticky across sessions). On older ACE versions that never emit it, the watcher falls back to the sectors-present heuristic, so behavior is unchanged there.
+
 ---
 
 ## Car Name Formatting
