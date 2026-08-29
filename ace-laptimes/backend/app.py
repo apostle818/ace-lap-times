@@ -479,6 +479,53 @@ def check_password(password, password_hash):
 # for deciding whether a username is registered.
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode()
 
+# ─── Visibility ──────────────────────────────────────────────────────
+#
+# Groups are a privacy boundary: you see your own laps and the laps of people
+# you share at least one group with, and nothing else. A superadmin sees
+# everything. Before this, every read endpoint took a caller-supplied user_id
+# and answered for any account on the instance, so group membership gated
+# writes but not a single read.
+#
+# The user directory (/api/meta/users) is deliberately not scoped this way
+# for group admins — they need to see who exists in order to add members —
+# but it carries no lap data, only id, username and display name.
+
+def _visible_user_ids(db, user_id):
+    """Ids whose lap data `user_id` may read: themselves plus co-members."""
+    rows = db.execute(
+        """SELECT DISTINCT theirs.user_id
+           FROM group_members mine
+           JOIN group_members theirs ON mine.group_id = theirs.group_id
+           WHERE mine.user_id = ?""",
+        (user_id,),
+    ).fetchall()
+    ids = {r["user_id"] for r in rows}
+    ids.add(user_id)  # you can always see yourself, groups or not
+    return ids
+
+def _visibility_clause(column):
+    """
+    SQL fragment and params restricting `column` to the visible set. Returns
+    ("", []) for a superadmin. The set always contains the caller, so the IN
+    list is never empty.
+    """
+    if g.current_user_role == "superadmin":
+        return "", []
+    ids = sorted(_visible_user_ids(get_db(), g.current_user_id))
+    return f" AND {column} IN ({','.join('?' * len(ids))})", ids
+
+def _can_view_user(target_user_id):
+    if g.current_user_role == "superadmin":
+        return True
+    return int(target_user_id) in _visible_user_ids(get_db(), g.current_user_id)
+
+def _is_group_admin_somewhere(db, user_id):
+    return db.execute(
+        "SELECT 1 FROM group_members WHERE user_id = ? AND role = 'group_admin'",
+        (user_id,),
+    ).fetchone() is not None
+
 # ─── Auth routes ─────────────────────────────────────────────────────
 
 @app.route("/api/auth/register", methods=["POST"])
@@ -730,6 +777,8 @@ def admin_revoke_api_key(key_id):
 @app.route("/api/users/<int:user_id>", methods=["GET"])
 @token_required
 def get_user_profile(user_id):
+    if not _can_view_user(user_id):
+        return jsonify({"error": "User not found"}), 404
     db = get_db()
     user = db.execute(
         "SELECT id, username, display_name, bio, role, created_at FROM users WHERE id = ?",
@@ -1187,10 +1236,18 @@ def get_laptimes():
         FROM laptimes l JOIN users u ON l.user_id = u.id
         WHERE 1=1
     """
-    params = []
+    scope_sql, scope_params = _visibility_clause("l.user_id")
+    query += scope_sql
+    params = list(scope_params)
     if user_filter:
+        try:
+            user_filter = int(user_filter)
+        except (TypeError, ValueError):
+            return jsonify({"error": "user_id must be a number"}), 400
+        if not _can_view_user(user_filter):
+            return jsonify({"error": "Driver not found"}), 404
         query += " AND l.user_id = ?"
-        params.append(int(user_filter))
+        params.append(user_filter)
     if track_filter:
         query += " AND l.track = ?"
         params.append(track_filter)
@@ -1263,7 +1320,9 @@ def leaderboard():
         FROM laptimes l JOIN users u ON l.user_id = u.id
         WHERE 1=1
     """
-    params = []
+    scope_sql, scope_params = _visibility_clause("l.user_id")
+    query += scope_sql
+    params = list(scope_params)
     if track:
         query += " AND l.track = ?"
         params.append(track)
@@ -1278,6 +1337,12 @@ def leaderboard():
 @token_required
 def personal_bests():
     user_id = request.args.get("user_id", g.current_user_id)
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id must be a number"}), 400
+    if not _can_view_user(user_id):
+        return jsonify({"error": "Driver not found"}), 404
     db = get_db()
     rows = db.execute(
         """SELECT track, car, MIN(laptime_ms) as best_time, COUNT(*) as attempts
@@ -1293,6 +1358,12 @@ def progress():
     track = request.args.get("track")
     car = request.args.get("car")
     user_id = request.args.get("user_id", g.current_user_id)
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id must be a number"}), 400
+    if not _can_view_user(user_id):
+        return jsonify({"error": "Driver not found"}), 404
     db = get_db()
     query = "SELECT laptime_ms, recorded_at, weather, notes FROM laptimes WHERE user_id = ?"
     params = [user_id]
@@ -1312,21 +1383,42 @@ def progress():
 @token_or_key_required
 def get_tracks():
     db = get_db()
-    rows = db.execute("SELECT DISTINCT track FROM laptimes ORDER BY track").fetchall()
+    scope_sql, scope_params = _visibility_clause("user_id")
+    rows = db.execute(
+        f"SELECT DISTINCT track FROM laptimes WHERE 1=1{scope_sql} ORDER BY track",
+        scope_params,
+    ).fetchall()
     return jsonify([r["track"] for r in rows])
 
 @app.route("/api/meta/cars", methods=["GET"])
 @token_or_key_required
 def get_cars():
     db = get_db()
-    rows = db.execute("SELECT DISTINCT car FROM laptimes ORDER BY car").fetchall()
+    scope_sql, scope_params = _visibility_clause("user_id")
+    rows = db.execute(
+        f"SELECT DISTINCT car FROM laptimes WHERE 1=1{scope_sql} ORDER BY car",
+        scope_params,
+    ).fetchall()
     return jsonify([r["car"] for r in rows])
 
 @app.route("/api/meta/users", methods=["GET"])
 @token_required
 def get_users():
     db = get_db()
-    rows = db.execute("SELECT id, username, display_name FROM users ORDER BY display_name").fetchall()
+    # Group admins need the full directory to add people to their groups;
+    # a plain member only ever sees the people they already share a group
+    # with. Either way this returns no lap data.
+    if g.current_user_role == "superadmin" or _is_group_admin_somewhere(db, g.current_user_id):
+        rows = db.execute(
+            "SELECT id, username, display_name FROM users ORDER BY display_name"
+        ).fetchall()
+    else:
+        ids = sorted(_visible_user_ids(db, g.current_user_id))
+        rows = db.execute(
+            f"""SELECT id, username, display_name FROM users
+                WHERE id IN ({','.join('?' * len(ids))}) ORDER BY display_name""",
+            ids,
+        ).fetchall()
     return jsonify([dict(r) for r in rows])
 
 # ─── Export ──────────────────────────────────────────────────────────
@@ -1335,10 +1427,14 @@ def get_users():
 @token_required
 def export_csv():
     db = get_db()
+    scope_sql, scope_params = _visibility_clause("l.user_id")
     rows = db.execute(
-        """SELECT u.display_name as driver, l.track, l.car, l.laptime_ms, l.weather, l.notes, l.recorded_at
-           FROM laptimes l JOIN users u ON l.user_id = u.id
-           ORDER BY l.recorded_at DESC"""
+        f"""SELECT u.display_name as driver, l.track, l.car, l.laptime_ms,
+                   l.weather, l.notes, l.recorded_at
+            FROM laptimes l JOIN users u ON l.user_id = u.id
+            WHERE 1=1{scope_sql}
+            ORDER BY l.recorded_at DESC""",
+        scope_params,
     ).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1360,10 +1456,14 @@ def export_csv():
 @token_required
 def export_json():
     db = get_db()
+    scope_sql, scope_params = _visibility_clause("l.user_id")
     rows = db.execute(
-        """SELECT u.display_name as driver, l.track, l.car, l.laptime_ms, l.weather, l.notes, l.recorded_at
-           FROM laptimes l JOIN users u ON l.user_id = u.id
-           ORDER BY l.recorded_at DESC"""
+        f"""SELECT u.display_name as driver, l.track, l.car, l.laptime_ms,
+                   l.weather, l.notes, l.recorded_at
+            FROM laptimes l JOIN users u ON l.user_id = u.id
+            WHERE 1=1{scope_sql}
+            ORDER BY l.recorded_at DESC""",
+        scope_params,
     ).fetchall()
     return Response(
         json.dumps([dict(r) for r in rows], indent=2),
