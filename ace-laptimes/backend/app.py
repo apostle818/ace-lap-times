@@ -937,10 +937,31 @@ def admin_delete_user(user_id):
     if user_id == g.current_user_id:
         return jsonify({"error": "Cannot delete yourself"}), 400
     db = get_db()
-    db.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
-    db.execute("DELETE FROM laptimes WHERE user_id = ?", (user_id,))
-    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    db.commit()
+    target = db.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        return jsonify({"error": "User not found"}), 404
+
+    # groups.created_by and group_invites.created_by have no cascade, so
+    # deleting someone who created a group used to leave the delete to fail
+    # partway through with rows already gone. Authorship moves to the
+    # superadmin doing the deletion, which keeps the group intact and its
+    # history honest about who owns it now.
+    try:
+        with db:
+            db.execute("UPDATE groups SET created_by = ? WHERE created_by = ?",
+                       (g.current_user_id, user_id))
+            db.execute("UPDATE group_invites SET created_by = ? WHERE created_by = ?",
+                       (g.current_user_id, user_id))
+            db.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM laptimes WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM api_keys WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM client_sessions WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    except sqlite3.IntegrityError:
+        # `with db` rolled the whole thing back, so nothing is half-deleted.
+        return jsonify({
+            "error": "Could not delete this user - something still references them"
+        }), 409
     return jsonify({"message": "Deleted"})
 
 # ─── Client session tracking ─────────────────────────────────────────

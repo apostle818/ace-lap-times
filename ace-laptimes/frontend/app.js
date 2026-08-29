@@ -502,8 +502,8 @@ function bindPageEvents() {
     try { await loadPageData(); }
     finally { renderPageContent(); }
   });
-  document.getElementById('export-csv')?.addEventListener('click', () => window.open(`${API}/export/csv`,'_blank'));
-  document.getElementById('export-json')?.addEventListener('click', () => window.open(`${API}/export/json`,'_blank'));
+  document.getElementById('export-csv')?.addEventListener('click', () => downloadExport('csv'));
+  document.getElementById('export-json')?.addEventListener('click', () => downloadExport('json'));
   if (state.page === 'progress' && state.progress.length > 0) renderProgressChart();
 
   document.getElementById('revoke-sessions-btn')?.addEventListener('click', async () => {
@@ -1478,6 +1478,34 @@ function renderGroupDetail() {
         </table>
       </div>` : ''}
     </div>`:''}`;
+}
+
+// window.open cannot carry the Authorization header, so the export links
+// always came back 401 and downloaded nothing. Fetch with auth, then hand
+// the browser a blob.
+async function downloadExport(kind) {
+  const btn = document.getElementById(`export-${kind}`);
+  // innerHTML, not textContent: the label contains an inline SVG icon that
+  // textContent would drop on restore.
+  const original = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
+  try {
+    const res = await apiFetch(`/export/${kind}`);
+    if (!res) return;                       // 401 already signed the user out
+    if (!res.ok) { alert('Export failed. Try again.'); return; }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement('a'), {
+      href: url,
+      download: `ace_laptimes_${new Date().toISOString().slice(0,10).replace(/-/g,'')}.${kind}`,
+    });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = original; }
+  }
 }
 
 // ─── Shared components ──────────────────────────────────────────────
