@@ -68,7 +68,7 @@ appears below Groups. If it does, the upgrade is complete.
 ```bash
 docker compose down
 # edit docker-compose.yml to pin the previous version, e.g.
-#   image: apostle818/ace-laptimes-backend:v1.1.1
+#   image: apostle818/ace-laptimes-backend:v1.1.0
 docker compose up -d
 ```
 

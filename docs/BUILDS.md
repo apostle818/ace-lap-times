@@ -9,12 +9,17 @@ Images are built and published by GitHub Actions
 | Event | Result |
 |---|---|
 | Push to `main` | Rebuilds only the changed services → `:latest`, `:main-<sha>` |
-| Tag `v*` | Rebuilds **all three** services → `:vX.Y.Z`, `:X.Y`, `:latest` |
+| Tag `v*` | Rebuilds **all three** services → `:X.Y.Z`, `:X.Y`, `:vX.Y.Z`, `:vX.Y`, `:latest` |
 | Pull request | Builds only — never pushed |
 | Manual (`workflow_dispatch`) | Build all, or a single service |
 
 A version tag always rebuilds all three images so that a given version is a
 coherent set, even if the tagged commit only touched one service.
+
+Both bare and `v`-prefixed version tags are published (`1.2.0` and `v1.2.0`
+point at the same image). `docker/metadata-action` strips the leading `v` from
+semver patterns by default; the `v`-prefixed aliases are kept because releases
+before v1.2.0 were published that way by `build-and-push.sh`.
 
 ## Required secrets
 
