@@ -870,14 +870,22 @@ def client_heartbeat():
     existing = db.execute(
         "SELECT id, user_id FROM client_sessions WHERE client_id = ?", (client_id,)
     ).fetchone()
+    if existing and existing["user_id"] != g.current_user_id:
+        # client_id comes from the caller. The update used to reassign the row
+        # to whoever sent it, so anyone who learned another machine's id could
+        # take over its entry in the admin Connected Clients panel and put
+        # their own hostname and address against that driver's name.
+        return jsonify({
+            "error": "That client_id belongs to another account"
+        }), 409
     if existing:
         db.execute(
             """UPDATE client_sessions
-               SET user_id = ?, hostname = ?, platform = ?, app_version = ?,
+               SET hostname = ?, platform = ?, app_version = ?,
                    user_agent = ?, ip_address = ?, last_seen_at = ?, disconnected_at = NULL
-               WHERE client_id = ?""",
-            (g.current_user_id, hostname, platform, app_version,
-             user_agent, ip, now, client_id),
+               WHERE client_id = ? AND user_id = ?""",
+            (hostname, platform, app_version,
+             user_agent, ip, now, client_id, g.current_user_id),
         )
     else:
         db.execute(

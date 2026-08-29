@@ -73,6 +73,10 @@ class LapRecord:
 
 # ─── API Client ──────────────────────────────────────────────────────
 
+class ClientIdConflict(Exception):
+    """The server has this client_id registered to a different account."""
+
+
 class APIClient:
     """
     Talks to the backend with an API key.
@@ -191,6 +195,11 @@ class APIClient:
             "app_version": APP_VERSION,
         }
         resp = requests.post(url, json=payload, headers=self._headers(), timeout=5)
+        if resp.status_code == 409:
+            # The server keeps a client_id to one account. Ours collides with
+            # another user's — on a shared machine, or after a registry copy —
+            # so the caller needs to mint a fresh one.
+            raise ClientIdConflict()
         return resp.status_code == 200
 
     def send_disconnect(self, client_id: str) -> bool:
@@ -1389,6 +1398,11 @@ class MainWindow(QMainWindow):
             return
         try:
             self.api.send_heartbeat(self.client_id)
+        except ClientIdConflict:
+            # Take a new identity and let the next tick register it.
+            self.client_id = str(uuid.uuid4())
+            self.settings.setValue("client_id", self.client_id)
+            self._log("This client ID was already registered to another account - issued a new one")
         except Exception:
             # Heartbeat failures are expected when the network/server is
             # unreachable; the admin view will surface that as "Lost".
