@@ -1,0 +1,70 @@
+name: CI
+
+# There is no test suite yet, so this is a cheap correctness floor:
+# every Python file must at least parse, and ruff catches undefined names,
+# unused imports and obvious mistakes before they reach a Docker build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff==0.8.4
+
+      - name: Compile check
+        run: |
+          python -m compileall -q ace-laptimes/backend ace-tray
+
+      # E402 is disabled: ace_tray.py deliberately sets Qt attributes before
+      # importing the rest of PyQt6, and app.py calls init_db() at import time.
+      - name: Ruff
+        run: |
+          ruff check \
+            --select E9,F63,F7,F82,F401,F811,F841 \
+            --ignore E402 \
+            ace-laptimes/backend ace-tray
+
+      - name: Validate workflow YAML
+        run: |
+          python - <<'PY'
+          import pathlib, sys, yaml
+          bad = False
+          for f in sorted(pathlib.Path('.github/workflows').glob('*.yml')):
+              try:
+                  yaml.safe_load(f.read_text())
+                  print(f"ok   {f}")
+              except Exception as e:
+                  print(f"FAIL {f}: {e}")
+                  bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        working-directory: ace-laptimes
+        run: |
+          SECRET_KEY=ci-placeholder docker compose config --quiet
+          echo "docker-compose.yml is valid"

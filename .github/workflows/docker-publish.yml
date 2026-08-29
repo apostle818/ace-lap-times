@@ -1,0 +1,171 @@
+name: Build & publish Docker images
+
+# Builds the three ACE Lap Tracker images and pushes them to Docker Hub.
+#
+#   push to main   -> :latest and :main-<sha>
+#   tag v*         -> :vX.Y.Z, :X.Y, :latest (all three images, always)
+#   pull request   -> build only, never pushed (catches broken Dockerfiles)
+#   manual         -> workflow_dispatch, optionally limited to one service
+#
+# Requires two repository secrets:
+#   DOCKERHUB_USERNAME  - Docker Hub account name
+#   DOCKERHUB_TOKEN     - Docker Hub access token with Read & Write scope
+#
+# Architectures: linux/amd64, linux/arm64, linux/arm/v7.
+# ARMv6 (Pi Zero W, Pi 1) is NOT built - see docs/BUILDS.md for why.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Which image to build'
+        required: true
+        default: all
+        type: choice
+        options: [all, backend, frontend, nginx]
+
+env:
+  REGISTRY_NAMESPACE: apostle818
+  APP: ace-laptimes
+  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Work out which images actually need rebuilding. A backend-only commit
+  # should not spend QEMU minutes rebuilding nginx.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      services: ${{ steps.select.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'ace-laptimes/backend/**'
+            frontend:
+              - 'ace-laptimes/frontend/**'
+            nginx:
+              - 'ace-laptimes/nginx/**'
+
+      - name: Select services to build
+        id: select
+        env:
+          MANUAL_SERVICE: ${{ github.event.inputs.service }}
+          CHANGED_BACKEND: ${{ steps.filter.outputs.backend }}
+          CHANGED_FRONTEND: ${{ steps.filter.outputs.frontend }}
+          CHANGED_NGINX: ${{ steps.filter.outputs.nginx }}
+        run: |
+          set -euo pipefail
+
+          # A version tag must produce a coherent set of images, so it always
+          # builds all three regardless of what changed in the tagged commit.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo 'services=["backend","frontend","nginx"]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${MANUAL_SERVICE}" == "all" ]]; then
+              echo 'services=["backend","frontend","nginx"]' >> "$GITHUB_OUTPUT"
+            else
+              echo "services=[\"${MANUAL_SERVICE}\"]" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          selected=()
+          if [[ "${CHANGED_BACKEND}"  == "true" ]]; then selected+=('"backend"');  fi
+          if [[ "${CHANGED_FRONTEND}" == "true" ]]; then selected+=('"frontend"'); fi
+          if [[ "${CHANGED_NGINX}"    == "true" ]]; then selected+=('"nginx"');    fi
+
+          if [[ ${#selected[@]} -eq 0 ]]; then
+            echo "services=[]" >> "$GITHUB_OUTPUT"
+          else
+            printf 'services=[%s]\n' "$(IFS=,; echo "${selected[*]}")" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.services != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.changes.outputs.services) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Emulation for the arm64 and arm/v7 legs.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Pull requests build but never push, so no credentials are needed
+      # (and forks can run this workflow without access to secrets).
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_NAMESPACE }}/${{ env.APP }}-${{ matrix.service }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch,prefix=,suffix=-{{sha}}
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.title=ACE Lap Tracker (${{ matrix.service }})
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ace-laptimes/${{ matrix.service }}
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Per-service cache scopes, so the three images don't evict
+          # each other from the 10 GB Actions cache budget.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+      - name: Summary
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Pushed \`${{ matrix.service }}\`"
+            echo ""
+            echo "Platforms: \`${{ env.PLATFORMS }}\`"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -4,6 +4,8 @@ import sqlite3
 import csv
 import io
 import secrets
+import hashlib
+import hmac
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -101,6 +103,21 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_client_sessions_last_seen ON client_sessions(last_seen_at);
+        CREATE TABLE IF NOT EXISTS api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            key_id TEXT UNIQUE NOT NULL,
+            key_hash TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'tray',
+            created_at TEXT DEFAULT (datetime('now')),
+            last_used_at TEXT,
+            expires_at TEXT,
+            revoked_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_key_id ON api_keys(key_id);
     """)
     # Migrations
     user_cols = [r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()]
@@ -117,6 +134,104 @@ def init_db():
     db.close()
 
 init_db()
+
+# ─── API keys ────────────────────────────────────────────────────────
+#
+# Format:  alt_<key_id>_<secret>
+#   e.g.   alt_30962196d5e1_LLMkH0BiKIlYp1CccpvVj2nx_STy20zO-NLMk5CftBw
+#
+# key_id is the public half (hex, indexed) and the secret half carries 256
+# bits of entropy. Only the SHA-256 of the whole key is stored; the plaintext
+# is shown once at creation and is unrecoverable afterwards. SHA-256 rather
+# than bcrypt is deliberate: with that much entropy there is nothing to
+# brute-force, and bcrypt would add ~100ms to every lap upload and heartbeat.
+
+API_KEY_PREFIX = "alt"
+API_KEY_ID_BYTES = 6       # 12 hex chars, the public half used for lookup
+API_KEY_SECRET_BYTES = 32  # ~43 chars, ~256 bits of entropy
+
+def generate_api_key():
+    """Return (full_key, key_id, key_hash). Full key is never stored."""
+    # key_id is hex, never urlsafe base64: the base64url alphabet contains
+    # "_", which would break parsing of the underscore-delimited key.
+    key_id = secrets.token_hex(API_KEY_ID_BYTES)
+    secret = secrets.token_urlsafe(API_KEY_SECRET_BYTES)
+    full = f"{API_KEY_PREFIX}_{key_id}_{secret}"
+    return full, key_id, hash_api_key(full)
+
+def hash_api_key(full_key):
+    return hashlib.sha256(full_key.encode()).hexdigest()
+
+def parse_api_key(full_key):
+    """Split a presented key into its public id, or None if malformed."""
+    # maxsplit=2: the secret half may legitimately contain "_".
+    parts = full_key.split("_", 2)
+    if len(parts) != 3 or parts[0] != API_KEY_PREFIX:
+        return None
+    if not parts[1] or not parts[2]:
+        return None
+    return parts[1]
+
+def _touch_api_key(db, row):
+    """Record last_used_at, at most once a minute to avoid a write per request."""
+    now = datetime.utcnow()
+    last = row["last_used_at"]
+    if last:
+        try:
+            if (now - datetime.fromisoformat(last)).total_seconds() < 60:
+                return
+        except ValueError:
+            pass
+    db.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+               (now.isoformat(timespec="seconds"), row["id"]))
+    db.commit()
+
+def _authenticate_api_key(presented):
+    """
+    Validate an X-API-Key header. On success populate g and return None,
+    otherwise return a Flask error response.
+    """
+    key_id = parse_api_key(presented)
+    if not key_id:
+        return jsonify({"error": "Invalid API key"}), 401
+
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM api_keys WHERE key_id = ?", (key_id,)
+    ).fetchone()
+    # Compare unconditionally against a dummy hash when the id is unknown so
+    # that valid and invalid key ids take the same amount of work.
+    expected = row["key_hash"] if row else "0" * 64
+    matched = hmac.compare_digest(expected, hash_api_key(presented))
+    if not row or not matched:
+        return jsonify({"error": "Invalid API key"}), 401
+
+    if row["revoked_at"]:
+        return jsonify({"error": "API key revoked"}), 401
+    if row["expires_at"]:
+        try:
+            if datetime.fromisoformat(row["expires_at"]) < datetime.utcnow():
+                return jsonify({"error": "API key expired"}), 401
+        except ValueError:
+            pass
+
+    user = db.execute(
+        "SELECT id, username, role FROM users WHERE id = ?", (row["user_id"],)
+    ).fetchone()
+    if not user:
+        return jsonify({"error": "Invalid API key"}), 401
+
+    _touch_api_key(db, row)
+
+    g.current_user_id = user["id"]
+    g.current_username = user["username"]
+    # An API key never carries the owner's role. Even a superadmin's key acts
+    # as a plain member, so a leaked tray key cannot reach admin routes.
+    g.current_user_role = "member"
+    g.auth_method = "api_key"
+    g.current_api_key_id = row["id"]
+    g.current_api_key_scope = row["scope"]
+    return None
 
 # ─── Auth helpers ────────────────────────────────────────────────────
 
@@ -146,17 +261,53 @@ def _parse_token():
         return jsonify({"error": "Invalid token"}), 401
 
 def token_required(f):
+    """
+    JWT only. API keys are deliberately rejected here: every route added in
+    future is key-inaccessible by default, and only the handful explicitly
+    marked with @token_or_key_required opens up to them.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
+        if request.headers.get("X-API-Key"):
+            return jsonify({
+                "error": "This endpoint requires a user session, not an API key"
+            }), 403
         err = _parse_token()
         if err:
             return err
+        g.auth_method = "jwt"
+        return f(*args, **kwargs)
+    return decorated
+
+def token_or_key_required(f):
+    """
+    Accepts either a JWT or a scope='tray' API key. Applied only to the
+    endpoints the tray app actually needs.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        presented = request.headers.get("X-API-Key", "").strip()
+        if presented:
+            err = _authenticate_api_key(presented)
+            if err:
+                return err
+            if g.current_api_key_scope != "tray":
+                return jsonify({"error": "API key scope does not allow this"}), 403
+            return f(*args, **kwargs)
+        err = _parse_token()
+        if err:
+            return err
+        g.auth_method = "jwt"
         return f(*args, **kwargs)
     return decorated
 
 def superadmin_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        if request.headers.get("X-API-Key"):
+            return jsonify({
+                "error": "This endpoint requires a user session, not an API key"
+            }), 403
         err = _parse_token()
         if err:
             return err
@@ -229,7 +380,7 @@ def login():
     })
 
 @app.route("/api/auth/me", methods=["GET"])
-@token_required
+@token_or_key_required
 def me():
     db = get_db()
     user = db.execute("SELECT id, username, display_name, bio, role FROM users WHERE id = ?", (g.current_user_id,)).fetchone()
@@ -260,6 +411,124 @@ def update_profile():
                (display_name, bio, g.current_user_id))
     db.commit()
     return jsonify({"message": "Profile updated"})
+
+# ─── API key management ──────────────────────────────────────────────
+
+def _key_row_to_json(r):
+    return {
+        "id": r["id"],
+        "name": r["name"],
+        "key_id": r["key_id"],
+        # Enough to recognise a key in the UI without revealing it.
+        "masked": f"{API_KEY_PREFIX}_{r['key_id']}_" + "\u2022" * 8,
+        "scope": r["scope"],
+        "created_at": r["created_at"],
+        "last_used_at": r["last_used_at"],
+        "expires_at": r["expires_at"],
+        "revoked_at": r["revoked_at"],
+    }
+
+@app.route("/api/keys", methods=["GET"])
+@token_required
+def list_api_keys():
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM api_keys WHERE user_id = ? ORDER BY revoked_at IS NOT NULL, created_at DESC",
+        (g.current_user_id,),
+    ).fetchall()
+    return jsonify([_key_row_to_json(r) for r in rows])
+
+@app.route("/api/keys", methods=["POST"])
+@token_required
+def create_api_key():
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()[:100]
+    if not name:
+        return jsonify({"error": "Key name required"}), 400
+
+    expires_at = None
+    raw_days = data.get("expires_in_days")
+    if raw_days not in (None, "", 0, "0"):
+        try:
+            days = int(raw_days)
+        except (TypeError, ValueError):
+            return jsonify({"error": "expires_in_days must be a number"}), 400
+        if days < 1 or days > 3650:
+            return jsonify({"error": "expires_in_days must be between 1 and 3650"}), 400
+        expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat(timespec="seconds")
+
+    db = get_db()
+    active = db.execute(
+        "SELECT COUNT(*) FROM api_keys WHERE user_id = ? AND revoked_at IS NULL",
+        (g.current_user_id,),
+    ).fetchone()[0]
+    if active >= 25:
+        return jsonify({"error": "Too many active keys - revoke some first"}), 429
+
+    for _attempt in range(5):
+        full_key, key_id, key_hash = generate_api_key()
+        try:
+            cursor = db.execute(
+                """INSERT INTO api_keys (user_id, name, key_id, key_hash, scope, expires_at)
+                   VALUES (?, ?, ?, ?, 'tray', ?)""",
+                (g.current_user_id, name, key_id, key_hash, expires_at),
+            )
+            break
+        except sqlite3.IntegrityError:
+            continue  # key_id collision; regenerate
+    else:
+        return jsonify({"error": "Could not allocate a key, try again"}), 500
+    db.commit()
+    row = db.execute("SELECT * FROM api_keys WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    payload = _key_row_to_json(row)
+    # The only time the plaintext key is ever returned.
+    payload["key"] = full_key
+    return jsonify(payload), 201
+
+@app.route("/api/keys/<int:key_id>", methods=["DELETE"])
+@token_required
+def revoke_api_key(key_id):
+    db = get_db()
+    row = db.execute(
+        "SELECT * FROM api_keys WHERE id = ? AND user_id = ?", (key_id, g.current_user_id)
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "Key not found"}), 404
+    if row["revoked_at"]:
+        return jsonify({"message": "Already revoked"})
+    db.execute("UPDATE api_keys SET revoked_at = ? WHERE id = ?",
+               (datetime.utcnow().isoformat(timespec="seconds"), key_id))
+    db.commit()
+    return jsonify({"message": "Key revoked"})
+
+@app.route("/api/admin/keys", methods=["GET"])
+@superadmin_required
+def admin_list_api_keys():
+    db = get_db()
+    rows = db.execute(
+        """SELECT k.*, u.username, u.display_name
+           FROM api_keys k JOIN users u ON k.user_id = u.id
+           ORDER BY k.revoked_at IS NOT NULL, k.created_at DESC"""
+    ).fetchall()
+    out = []
+    for r in rows:
+        item = _key_row_to_json(r)
+        item.update({"user_id": r["user_id"], "username": r["username"],
+                     "display_name": r["display_name"]})
+        out.append(item)
+    return jsonify(out)
+
+@app.route("/api/admin/keys/<int:key_id>", methods=["DELETE"])
+@superadmin_required
+def admin_revoke_api_key(key_id):
+    db = get_db()
+    row = db.execute("SELECT * FROM api_keys WHERE id = ?", (key_id,)).fetchone()
+    if not row:
+        return jsonify({"error": "Key not found"}), 404
+    db.execute("UPDATE api_keys SET revoked_at = ? WHERE id = ?",
+               (datetime.utcnow().isoformat(timespec="seconds"), key_id))
+    db.commit()
+    return jsonify({"message": "Key revoked"})
 
 # ─── User profile ─────────────────────────────────────────────────────
 
@@ -334,7 +603,7 @@ def _client_ip():
     return request.remote_addr or ""
 
 @app.route("/api/client/heartbeat", methods=["POST"])
-@token_required
+@token_or_key_required
 def client_heartbeat():
     data = request.get_json(silent=True) or {}
     client_id = (data.get("client_id") or "").strip()
@@ -373,7 +642,7 @@ def client_heartbeat():
     return jsonify({"ok": True, "server_time": now})
 
 @app.route("/api/client/disconnect", methods=["POST"])
-@token_required
+@token_or_key_required
 def client_disconnect():
     data = request.get_json(silent=True) or {}
     client_id = (data.get("client_id") or "").strip()
@@ -659,7 +928,7 @@ def join_via_invite(token):
 # ─── Laptime CRUD ────────────────────────────────────────────────────
 
 @app.route("/api/laptimes", methods=["POST"])
-@token_required
+@token_or_key_required
 def create_laptime():
     data = request.get_json()
     track = data.get("track", "").strip()
@@ -677,6 +946,10 @@ def create_laptime():
     lap_owner_id = g.current_user_id
 
     if target_user_id and int(target_user_id) != g.current_user_id:
+        # API keys are self-scoped: they can never attribute a lap to
+        # another driver, whatever role the owning account holds.
+        if getattr(g, "auth_method", "jwt") == "api_key":
+            return jsonify({"error": "API keys can only record your own laps"}), 403
         if g.current_user_role == "superadmin":
             lap_owner_id = int(target_user_id)
         else:
@@ -699,7 +972,7 @@ def create_laptime():
     return jsonify({"id": cursor.lastrowid, "message": "Lap recorded"}), 201
 
 @app.route("/api/laptimes", methods=["GET"])
-@token_required
+@token_or_key_required
 def get_laptimes():
     db = get_db()
     user_filter = request.args.get("user_id")
@@ -833,14 +1106,14 @@ def progress():
 # ─── Metadata ────────────────────────────────────────────────────────
 
 @app.route("/api/meta/tracks", methods=["GET"])
-@token_required
+@token_or_key_required
 def get_tracks():
     db = get_db()
     rows = db.execute("SELECT DISTINCT track FROM laptimes ORDER BY track").fetchall()
     return jsonify([r["track"] for r in rows])
 
 @app.route("/api/meta/cars", methods=["GET"])
-@token_required
+@token_or_key_required
 def get_cars():
     db = get_db()
     rows = db.execute("SELECT DISTINCT car FROM laptimes ORDER BY car").fetchall()

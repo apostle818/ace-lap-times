@@ -9,6 +9,7 @@ Built for sim racers who want to own their data without relying on third-party s
 - **Automatic lap detection** — Windows tray app reads ACE log files in real time, no manual entry needed
 - **Race + Practice support** — captures laps from both game modes with sector breakdowns
 - **User accounts** — password auth with JWT tokens, multiple drivers on one server
+- **API keys** — the tray app uploads with a revocable, upload-only key instead of your password
 - **Leaderboard** — compare best times across drivers, filtered by track and car
 - **Personal bests** — track your fastest time per track/car combo
 - **Progress charts** — visualize improvement over time for a specific track and car
@@ -47,6 +48,10 @@ Three Docker containers on a shared bridge network. The tray app runs on your ga
 
 **Requirements:** Docker and Docker Compose
 
+Images are published for `linux/amd64`, `linux/arm64` and `linux/arm/v7`, so a
+Raspberry Pi 3 or newer works out of the box. ARMv6 (Pi Zero / Pi Zero W / Pi 1)
+is **not supported** — see [docs/BUILDS.md](docs/BUILDS.md).
+
 1. Download [`ace-laptimes/docker-compose.yml`](ace-laptimes/docker-compose.yml)
 
 2. Create a `.env` file next to it:
@@ -66,21 +71,34 @@ The first registered user automatically becomes superadmin.
 
 ### Tray app (Windows)
 
+**Easiest:** download `ACELapTracker.exe` from the
+[latest release](../../releases/latest) and run it — no Python needed. Then skip to step 3.
+
+**From source:**
+
 1. Copy the `ace-tray` folder to your gaming PC
 
 2. Run `start.bat` — it creates a virtual environment and launches the app
 
-3. Go to **Settings**, enter your server URL and credentials, click **Connect**
+3. On the website, go to **My Profile → API Keys**, create a key, and copy it
 
-4. The app watches `C:\Users\<you>\Saved Games\ACE\Logs\log.txt` by default
+4. In the tray app go to **Settings**, enter your server URL, paste the API key, click **Connect**
 
-5. Race — laps are detected and submitted automatically
+   (Or expand *"Or sign in with username & password"* — the app then creates a key for
+   itself and stores only that. Your password is never written to disk.)
 
-6. Optional: run `install_autostart.bat` to launch on Windows login
+5. The app watches `C:\Users\<you>\Saved Games\ACE\Logs\log.txt` by default
+
+6. Race — laps are detected and submitted automatically
+
+7. Optional: run `install_autostart.bat` to launch on Windows login
+
+Upgrading from an older tray version? It swaps your saved login for an API key
+automatically on first launch — nothing to do.
 
 ### Multi-user on one PC
 
-The tray app stores credentials per Windows user account via `%APPDATA%`. Log into each Windows account, run `start.bat`, and connect with that user's credentials. Each account tracks independently.
+The tray app stores its API key per Windows user account via `%APPDATA%`. Log into each Windows account, run `start.bat`, and connect with that user's own key. Each account tracks independently.
 
 ## How lap detection works
 
@@ -120,11 +138,33 @@ All endpoints except auth and health require `Authorization: Bearer <token>`.
 | GET | `/api/meta/users` | All users |
 | GET | `/api/export/csv` | Download CSV |
 | GET | `/api/export/json` | Download JSON |
+| GET | `/api/keys` | List your API keys |
+| POST | `/api/keys` | Create an API key (returned once) |
+| DELETE | `/api/keys/:id` | Revoke an API key |
 | GET | `/api/health` | Health check |
+
+### Authentication
+
+Two credentials types, deliberately not interchangeable:
+
+- **JWT** (`Authorization: Bearer <token>`) — issued by `/api/auth/login`, used by the web UI. Full access for the account's role.
+- **API key** (`X-API-Key: alt_...`) — used by the tray app. Accepted on **only** these endpoints:
+  `GET /api/auth/me`, `GET|POST /api/laptimes`, `GET /api/meta/tracks`, `GET /api/meta/cars`,
+  `POST /api/client/heartbeat`, `POST /api/client/disconnect`.
+
+Everything else — admin routes, profile changes, exports, lap deletion, key management —
+rejects API keys with `403`, so a new endpoint is closed to keys unless explicitly opened.
+A key also carries no role (even a superadmin's key acts as a plain member) and can only
+ever record laps for its own owner.
+
+Keys are stored as a SHA-256 hash; the plaintext is shown once at creation and is
+unrecoverable afterwards. Revoking a key does not affect your password or web login.
 
 ## Tech stack
 
 **Server:** Python, Flask, SQLite, Gunicorn, Nginx, Docker
+
+**CI/CD:** GitHub Actions — multi-arch images to Docker Hub, PyInstaller Windows build
 
 **Tray app:** Python, PyQt6, requests
 
@@ -143,6 +183,9 @@ All endpoints except auth and health require `Authorization: Bearer <token>`.
 - [x] Invite link system
 - [x] Progress chart requires track + car selection
 - [x] GitHub release
+- [x] API key auth for the tray app
+- [x] Multi-arch image builds via GitHub Actions (amd64 / arm64 / armv7)
+- [x] Windows .exe built in CI
 - [ ] Public site with MFA & group/team setup
 - [ ] Track/car thumbnails
 - [ ] Head-to-head delta tracking

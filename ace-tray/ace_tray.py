@@ -7,8 +7,6 @@ to your ACE Lap Tracker backend on your homelab.
 import sys
 import os
 import re
-import json
-import time
 import uuid
 import socket
 import platform
@@ -22,15 +20,14 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QComboBox, QSystemTrayIcon,
     QMenu, QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QFormLayout, QSpinBox, QMessageBox, QTabWidget, QTextEdit,
-    QStackedWidget, QFrame, QSizePolicy, QFileDialog
+    QFormLayout, QSpinBox, QTabWidget, QTextEdit,
+    QFrame, QFileDialog
 )
 from PyQt6.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QSettings, QSize
+    Qt, QTimer, QThread, pyqtSignal, QSettings
 )
 from PyQt6.QtGui import (
-    QIcon, QPixmap, QPainter, QColor, QFont, QAction, QPalette,
-    QBrush, QLinearGradient
+    QIcon, QPixmap, QPainter, QColor, QFont, QAction, QBrush
 )
 
 import requests
@@ -38,7 +35,7 @@ import requests
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 ORG_NAME = "ACELaps"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
@@ -77,35 +74,83 @@ class LapRecord:
 # ─── API Client ──────────────────────────────────────────────────────
 
 class APIClient:
+    """
+    Talks to the backend with an API key.
+
+    An API key is scoped to lap upload only - it cannot change the account
+    or reach admin endpoints - and can be revoked from the website without
+    touching the password. A JWT is only ever held transiently, while
+    exchanging a username/password for a key in provision_key().
+    """
+
     def __init__(self):
         self.base_url = ""
-        self.token = ""
+        self.api_key = ""
         self.user_agent = f"ace-tray/{APP_VERSION} ({platform.system()} {platform.release()})"
 
-    def configure(self, base_url: str, token: str):
+    def configure(self, base_url: str, api_key: str):
         self.base_url = base_url.rstrip("/")
-        self.token = token
+        self.api_key = api_key
 
     def _headers(self):
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.token}",
+            "X-API-Key": self.api_key,
             "User-Agent": self.user_agent,
         }
 
-    def login(self, server_url: str, username: str, password: str) -> dict:
-        url = f"{server_url.rstrip('/')}/api/auth/login"
+    def verify_key(self, server_url: str, api_key: str) -> dict:
+        """Check a key against /api/auth/me and adopt it on success."""
+        base = server_url.rstrip("/")
+        resp = requests.get(
+            f"{base}/api/auth/me",
+            headers={
+                "Content-Type": "application/json",
+                "X-API-Key": api_key,
+                "User-Agent": self.user_agent,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        self.base_url = base
+        self.api_key = api_key
+        return data
+
+    def provision_key(self, server_url: str, username: str, password: str) -> dict:
+        """
+        Fallback path: exchange a username/password for an API key.
+
+        The password is never stored and the JWT is discarded as soon as the
+        key has been minted, so the only long-lived secret on disk is a
+        revocable, upload-only key.
+        """
+        base = server_url.rstrip("/")
         resp = requests.post(
-            url,
+            f"{base}/api/auth/login",
             json={"username": username, "password": password},
             headers={"User-Agent": self.user_agent},
             timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json()
-        self.base_url = server_url.rstrip("/")
-        self.token = data["token"]
-        return data
+        jwt_token = resp.json()["token"]
+
+        key_name = f"Tray on {socket.gethostname()}"
+        resp = requests.post(
+            f"{base}/api/keys",
+            json={"name": key_name},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jwt_token}",
+                "User-Agent": self.user_agent,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        api_key = resp.json()["key"]
+        del jwt_token
+
+        return self.verify_key(base, api_key)
 
     def submit_lap(self, lap: LapRecord) -> dict:
         url = f"{self.base_url}/api/laptimes"
@@ -126,7 +171,7 @@ class APIClient:
         return resp.json()
 
     def is_connected(self) -> bool:
-        if not self.base_url or not self.token:
+        if not self.base_url or not self.api_key:
             return False
         try:
             url = f"{self.base_url}/api/auth/me"
@@ -136,7 +181,7 @@ class APIClient:
             return False
 
     def send_heartbeat(self, client_id: str) -> bool:
-        if not self.base_url or not self.token:
+        if not self.base_url or not self.api_key:
             return False
         url = f"{self.base_url}/api/client/heartbeat"
         payload = {
@@ -149,7 +194,7 @@ class APIClient:
         return resp.status_code == 200
 
     def send_disconnect(self, client_id: str) -> bool:
-        if not self.base_url or not self.token:
+        if not self.base_url or not self.api_key:
             return False
         url = f"{self.base_url}/api/client/disconnect"
         resp = requests.post(
@@ -753,10 +798,13 @@ class MainWindow(QMainWindow):
 
         # Restore saved credentials
         saved_url = self.settings.value("server_url", "")
-        saved_token = self.settings.value("token", "")
-        saved_user = self.settings.value("display_name", "")
-        if saved_url and saved_token:
-            self.api.configure(saved_url, saved_token)
+        saved_key = self.settings.value("api_key", "")
+        if saved_url and saved_key:
+            self.api.configure(saved_url, saved_key)
+        elif saved_url:
+            # Upgrading from a version that stored a JWT: trade it for an API
+            # key while it is still valid, so the user notices nothing.
+            self._migrate_legacy_token(saved_url)
 
         self._build_ui()
         self._setup_tray()
@@ -954,15 +1002,47 @@ class MainWindow(QMainWindow):
         self.server_url_input.setText(self.settings.value("server_url", ""))
         server_form.addRow("Server URL:", self.server_url_input)
 
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setPlaceholderText("alt_...  (create one on the website)")
+        self.api_key_input.setText(self.settings.value("api_key", ""))
+        server_form.addRow("API Key:", self.api_key_input)
+
+        key_hint = QLabel(
+            "Create a key on the website under My Profile \u2192 API Keys, "
+            "then paste it here."
+        )
+        key_hint.setWordWrap(True)
+        key_hint.setStyleSheet("color: #8a8a9a; font-size: 11px;")
+        server_form.addRow("", key_hint)
+
+        # Fallback for anyone upgrading from a password-based install: sign in
+        # once and the app mints a key for itself, so the password is never
+        # written to disk.
+        self.pwd_toggle = QPushButton("Or sign in with username & password")
+        self.pwd_toggle.setCheckable(True)
+        self.pwd_toggle.setFlat(True)
+        self.pwd_toggle.setStyleSheet(
+            "text-align: left; color: #4a9eff; font-size: 11px; border: none;"
+        )
+        self.pwd_toggle.toggled.connect(self._toggle_password_fields)
+        server_form.addRow("", self.pwd_toggle)
+
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("Your username")
         self.username_input.setText(self.settings.value("username", ""))
-        server_form.addRow("Username:", self.username_input)
+        self.username_label = QLabel("Username:")
+        server_form.addRow(self.username_label, self.username_input)
 
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_input.setPlaceholderText("Your password")
-        server_form.addRow("Password:", self.password_input)
+        self.password_input.setPlaceholderText("Your password (never stored)")
+        self.password_label = QLabel("Password:")
+        server_form.addRow(self.password_label, self.password_input)
+
+        for w in (self.username_label, self.username_input,
+                  self.password_label, self.password_input):
+            w.setVisible(False)
 
         connect_row = QWidget()
         connect_layout = QHBoxLayout(connect_row)
@@ -1163,25 +1243,93 @@ class MainWindow(QMainWindow):
 
     # ── API Actions ──────────────────────────────────────────────────
 
+    def _toggle_password_fields(self, checked: bool):
+        for w in (self.username_label, self.username_input,
+                  self.password_label, self.password_input):
+            w.setVisible(checked)
+        self.pwd_toggle.setText(
+            "Use an API key instead" if checked
+            else "Or sign in with username & password"
+        )
+
+    def _set_status(self, text: str, ok: bool = False):
+        colour = "#2ec866" if ok else "#e63946"
+        self.connection_status.setText(text)
+        self.connection_status.setStyleSheet(
+            f"color: {colour}; font-size: 12px; font-weight: 600;"
+        )
+
+    def _migrate_legacy_token(self, saved_url: str):
+        """
+        One-time upgrade path. Older builds stored a 30-day JWT; if one is
+        still present and valid, mint an API key with it and drop the JWT.
+        Silent on failure - the user just reconnects from Settings.
+        """
+        legacy = self.settings.value("token", "")
+        if not legacy:
+            return
+        try:
+            resp = requests.post(
+                f"{saved_url.rstrip('/')}/api/keys",
+                json={"name": f"Tray on {socket.gethostname()}"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {legacy}",
+                    "User-Agent": self.api.user_agent,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            api_key = resp.json()["key"]
+        except Exception as e:
+            self._log(f"Could not upgrade saved login to an API key: {e}")
+            self.settings.remove("token")
+            return
+
+        self.api.configure(saved_url, api_key)
+        self.settings.setValue("api_key", api_key)
+        self.settings.remove("token")
+        self._log("Upgraded saved login to an API key - your password is no longer needed")
+
     def _connect_to_server(self):
         url = self.server_url_input.text().strip()
+        api_key = self.api_key_input.text().strip()
+        use_password = self.pwd_toggle.isChecked()
         username = self.username_input.text().strip()
         password = self.password_input.text()
 
-        if not url or not username or not password:
-            self.connection_status.setText("Fill in all fields")
-            self.connection_status.setStyleSheet("color: #e63946; font-size: 12px; font-weight: 600;")
+        if not url:
+            self._set_status("Enter the server URL")
+            return
+        if use_password:
+            if not username or not password:
+                self._set_status("Enter your username and password")
+                return
+        elif not api_key:
+            self._set_status("Paste your API key, or sign in with a password")
             return
 
         try:
-            data = self.api.login(url, username, password)
-            display_name = data["user"]["display_name"]
+            if use_password:
+                # Mints a key server-side; the password is discarded here.
+                data = self.api.provision_key(url, username, password)
+                self._log("Signed in and created a new API key for this PC")
+            else:
+                data = self.api.verify_key(url, api_key)
+            display_name = data["display_name"]
 
-            # Save credentials
+            # Only the API key is persisted - never the password.
             self.settings.setValue("server_url", url)
-            self.settings.setValue("username", username)
-            self.settings.setValue("token", self.api.token)
+            self.settings.setValue("username", data.get("username", username))
+            self.settings.setValue("api_key", self.api.api_key)
             self.settings.setValue("display_name", display_name)
+            self.settings.remove("token")  # drop any legacy JWT from an older version
+
+            # Reflect the provisioned key back into the UI and clear the password.
+            self.api_key_input.setText(self.api.api_key)
+            self.password_input.clear()
+            if use_password:
+                self.pwd_toggle.setChecked(False)
 
             self.connection_status.setText(f"Connected as {display_name}")
             self.connection_status.setStyleSheet("color: #2ec866; font-size: 12px; font-weight: 600;")
@@ -1203,17 +1351,23 @@ class MainWindow(QMainWindow):
                 self.pending_laps.clear()
 
         except requests.exceptions.ConnectionError:
-            self.connection_status.setText("Cannot reach server")
-            self.connection_status.setStyleSheet("color: #e63946; font-size: 12px; font-weight: 600;")
+            self._set_status("Cannot reach server")
             self._log(f"Connection failed: cannot reach {url}")
         except requests.exceptions.HTTPError as e:
-            msg = "Invalid credentials" if e.response.status_code == 401 else str(e)
-            self.connection_status.setText(msg)
-            self.connection_status.setStyleSheet("color: #e63946; font-size: 12px; font-weight: 600;")
-            self._log(f"Login failed: {msg}")
+            code = e.response.status_code if e.response is not None else 0
+            if code == 401:
+                msg = ("Invalid username or password" if use_password
+                       else "Invalid, revoked or expired API key")
+            elif code == 403:
+                msg = "This key is not allowed to do that"
+            elif code == 404 and use_password:
+                msg = "Server too old - it has no API key support yet"
+            else:
+                msg = str(e)
+            self._set_status(msg)
+            self._log(f"Connect failed: {msg}")
         except Exception as e:
-            self.connection_status.setText(f"Error: {e}")
-            self.connection_status.setStyleSheet("color: #e63946; font-size: 12px; font-weight: 600;")
+            self._set_status(f"Error: {e}")
             self._log(f"Connection error: {e}")
 
     def _check_connection(self):
@@ -1231,7 +1385,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Not connected – go to Settings to connect")
 
     def _send_heartbeat(self):
-        if not self.api.token or not self.api.base_url:
+        if not self.api.api_key or not self.api.base_url:
             return
         try:
             self.api.send_heartbeat(self.client_id)
@@ -1242,7 +1396,7 @@ class MainWindow(QMainWindow):
 
     def _submit_lap(self, lap: LapRecord):
         try:
-            result = self.api.submit_lap(lap)
+            self.api.submit_lap(lap)
             self._log(f"Submitted: {lap.track} / {lap.car} – {lap.formatted_time()}")
         except Exception as e:
             self._log(f"Submit failed: {e}")

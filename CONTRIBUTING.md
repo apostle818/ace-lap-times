@@ -28,6 +28,16 @@ Open an issue with the "feature" label. Describe the problem you're solving, not
 5. Commit with a clear message
 6. Open a pull request against `main`
 
+CI runs on every PR: a compile + `ruff` check over the backend and tray app, a
+`docker compose config` validation, and a no-push Docker build of any image you
+touched. You can run the lint step locally with:
+
+```bash
+pip install ruff
+python -m compileall -q ace-laptimes/backend ace-tray
+ruff check --select E9,F63,F7,F82,F401,F811,F841 --ignore E402 ace-laptimes/backend ace-tray
+```
+
 Keep PRs focused — one feature or fix per PR. Large PRs are harder to review and slower to merge.
 
 ## Development setup
