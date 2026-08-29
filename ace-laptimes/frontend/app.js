@@ -1006,6 +1006,10 @@ function renderProgressChart() {
     }));
     return;
   }
+  // Each re-render (a filter change, a refresh) builds a fresh canvas, and
+  // the chart bound to the old one would otherwise stay alive holding its
+  // listeners. Destroying first also makes this safe to call twice.
+  Chart.getChart(canvas)?.destroy();
   new Chart(canvas, {
     type: 'line',
     data: {

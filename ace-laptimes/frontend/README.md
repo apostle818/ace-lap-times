@@ -8,7 +8,7 @@ it once:
 
 ```bash
 npm install --no-save chart.js@4.4.7
-mkdir -p vendor && cp node_modules/chart.js/dist/chart.umd.min.js vendor/
+mkdir -p vendor && cp node_modules/chart.js/dist/chart.umd.js vendor/
 npx serve -s . -l 3000
 ```
 
