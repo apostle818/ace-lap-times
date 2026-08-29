@@ -46,6 +46,9 @@ Three Docker containers on a shared bridge network. The tray app runs on your ga
 
 ### Server
 
+> Already running an older version? See [docs/UPGRADING.md](docs/UPGRADING.md) —
+> upgrade the server before the tray app.
+
 **Requirements:** Docker and Docker Compose
 
 Images are published for `linux/amd64`, `linux/arm64` and `linux/arm/v7`, so a
@@ -98,7 +101,7 @@ automatically on first launch — nothing to do.
 
 ### Multi-user on one PC
 
-The tray app stores its API key per Windows user account via `%APPDATA%`. Log into each Windows account, run `start.bat`, and connect with that user's own key. Each account tracks independently.
+The tray app stores its API key per Windows user account (under `HKCU\Software\ACELaps` in the registry). Log into each Windows account, run the app, and connect with that user's own key. Each account tracks independently.
 
 ## How lap detection works
 
