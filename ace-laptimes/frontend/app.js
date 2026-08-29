@@ -14,6 +14,7 @@ const state = {
   groupMembersPage: 1,
   pendingInvite: null,
   inviteInfo: null,
+  groupInvites: [],
   // Pagination for lap history & personal bests
   historyPage: 1,
   historyPageSize: parseInt(localStorage.getItem('ace_history_page_size')) || 25,
@@ -137,6 +138,10 @@ async function loadGroups() {
 async function loadGroupDetail(id) {
   const res = await apiFetch(`/groups/${id}`);
   if (res && res.ok) { state.groupDetail = await res.json(); state.selectedGroupId = id; state.groupMembersPage = 1; }
+  // Only group admins and superadmins may list invites; a plain member
+  // viewing the group simply gets none.
+  const inv = await apiFetch(`/groups/${id}/invites`);
+  state.groupInvites = (inv && inv.ok) ? await inv.json() : [];
 }
 async function loadMyProfile() {
   const res = await apiFetch(`/users/${state.user?.id}`);
@@ -711,14 +716,38 @@ function bindPageEvents() {
 
   // Invite link
   document.getElementById('gen-invite-btn')?.addEventListener('click', async () => {
-    const res = await apiFetch(`/groups/${state.selectedGroupId}/invites`, { method: 'POST' });
+    const expiry = document.getElementById('invite-expiry')?.value ?? '';
+    const maxUses = document.getElementById('invite-max-uses')?.value ?? '';
+    const res = await apiFetch(`/groups/${state.selectedGroupId}/invites`, {
+      method: 'POST',
+      body: JSON.stringify({ expires_in_days: expiry === '' ? null : parseInt(expiry),
+                             max_uses: maxUses === '' ? null : parseInt(maxUses) }),
+    });
     if (!res) return;
     const data = await res.json();
     if (res.ok) {
       const link = `${window.location.origin}${window.location.pathname}?invite=${data.token}`;
-      document.getElementById('invite-link-display').value = link;
-      document.getElementById('copy-invite-btn').style.display = 'inline-flex';
+      // Re-render to pick up the new row, then restore the generated link —
+      // it is shown only here and cannot be read back from the server.
+      await loadGroupDetail(state.selectedGroupId);
+      renderPageContent(); bindPageEvents();
+      const field = document.getElementById('invite-link-display');
+      if (field) {
+        field.value = link;
+        document.getElementById('copy-invite-btn').style.display = 'inline-flex';
+      }
     }
+  });
+  document.querySelectorAll('.invite-revoke-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Revoke this invite link? Anyone still holding it will no longer be able to join.')) return;
+      const res = await apiFetch(`/groups/${state.selectedGroupId}/invites/${btn.dataset.iid}`, { method: 'DELETE' });
+      if (!res) return;
+      if (res.ok) {
+        await loadGroupDetail(state.selectedGroupId);
+        renderPageContent(); bindPageEvents();
+      }
+    });
   });
   document.getElementById('copy-invite-btn')?.addEventListener('click', () => {
     const val = document.getElementById('invite-link-display').value;
@@ -1401,16 +1430,53 @@ function renderGroupDetail() {
 
     ${canManage?`
     <div class="card fade-in">
-      <div class="card-header"><span class="card-title">Invite Link</span></div>
+      <div class="card-header"><span class="card-title">Invite Links</span></div>
       <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
-        Generate a shareable link. Anyone with the link can join this group.
+        Anyone with a link can join this group, so give it an expiry and a use
+        limit. You can revoke a link at any time.
       </p>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Expires after</label>
+          <select id="invite-expiry">
+            <option value="1">1 day</option>
+            <option value="7" selected>7 days</option>
+            <option value="30">30 days</option>
+            <option value="">Never</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Can be used</label>
+          <select id="invite-max-uses">
+            <option value="1">Once</option>
+            <option value="5">5 times</option>
+            <option value="25">25 times</option>
+            <option value="" selected>Any number of times</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px;">
         <input type="text" id="invite-link-display" readonly placeholder="Click Generate to create a link"
           style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-family:var(--mono);font-size:12px;padding:10px 12px;outline:none;">
         <button class="btn btn-secondary" id="gen-invite-btn">Generate</button>
         <button class="btn btn-ghost" id="copy-invite-btn" style="display:none;">Copy</button>
       </div>
+      ${(state.groupInvites||[]).length ? `
+      <div class="table-scroll" style="margin-top:20px;">
+        <table class="data-table">
+          <thead><tr><th>Created</th><th>Expires</th><th>Uses</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            ${state.groupInvites.map(i=>`
+              <tr style="${i.revoked_at||i.problem?'opacity:0.5;':''}">
+                <td data-label="Created" style="font-size:12px;">${escapeHtml((i.created_at||'').replace('T',' '))}</td>
+                <td data-label="Expires" style="font-size:12px;">${i.expires_at?escapeHtml(i.expires_at.replace('T',' ')):'Never'}</td>
+                <td data-label="Uses" style="font-size:12px;">${i.uses}${i.max_uses?` / ${i.max_uses}`:''}</td>
+                <td data-label="Status" style="font-size:12px;">${i.problem?`<span style="color:var(--text-muted);">${escapeHtml(i.problem)}</span>`:'<span style="color:var(--green);">Active</span>'}</td>
+                <td>${i.revoked_at?'':`<button class="btn btn-sm btn-danger invite-revoke-btn" data-iid="${i.id}">Revoke</button>`}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : ''}
     </div>`:''}`;
 }
 

@@ -191,6 +191,10 @@ def init_db():
             token TEXT UNIQUE NOT NULL,
             created_by INTEGER NOT NULL,
             created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT,
+            max_uses INTEGER,
+            uses INTEGER NOT NULL DEFAULT 0,
+            revoked_at TEXT,
             FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
             FOREIGN KEY (created_by) REFERENCES users(id)
         );
@@ -250,6 +254,17 @@ def init_db():
     if 'token_version' not in user_cols:
         db.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
         db.commit()
+    invite_cols = [r[1] for r in db.execute("PRAGMA table_info(group_invites)").fetchall()]
+    # Invites created before this release have no limits recorded. They are
+    # left usable rather than silently broken, but they now show up in the
+    # UI where a group admin can see and revoke them.
+    if 'expires_at' not in invite_cols:
+        db.execute("ALTER TABLE group_invites ADD COLUMN expires_at TEXT")
+        db.execute("ALTER TABLE group_invites ADD COLUMN max_uses INTEGER")
+        db.execute("ALTER TABLE group_invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0")
+        db.execute("ALTER TABLE group_invites ADD COLUMN revoked_at TEXT")
+        db.commit()
+
     group_cols = [r[1] for r in db.execute("PRAGMA table_info(groups)").fetchall()]
     if 'description' not in group_cols:
         db.execute("ALTER TABLE groups ADD COLUMN description TEXT DEFAULT ''")
@@ -1235,26 +1250,118 @@ def create_invite(group_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
+    data = request.get_json(silent=True) or {}
+
+    expires_at = None
+    raw_days = data.get("expires_in_days", 7)
+    if raw_days not in (None, "", 0, "0"):
+        days, err = parse_int(raw_days, "expires_in_days", minimum=1, maximum=365)
+        if err:
+            return err
+        expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat(timespec="seconds")
+
+    max_uses = None
+    raw_uses = data.get("max_uses")
+    if raw_uses not in (None, "", 0, "0"):
+        max_uses, err = parse_int(raw_uses, "max_uses", minimum=1, maximum=1000)
+        if err:
+            return err
+
     token = secrets.token_urlsafe(16)
     db.execute(
-        "INSERT INTO group_invites (group_id, token, created_by) VALUES (?, ?, ?)",
-        (group_id, token, g.current_user_id)
+        """INSERT INTO group_invites (group_id, token, created_by, expires_at, max_uses)
+           VALUES (?, ?, ?, ?, ?)""",
+        (group_id, token, g.current_user_id, expires_at, max_uses)
     )
     db.commit()
-    return jsonify({"token": token}), 201
+    return jsonify({"token": token, "expires_at": expires_at, "max_uses": max_uses}), 201
+
+
+def _invite_problem(invite):
+    """Why this invite cannot be used, or None when it is still good."""
+    if invite["revoked_at"]:
+        return "This invite link has been revoked"
+    if invite["expires_at"]:
+        try:
+            if datetime.fromisoformat(invite["expires_at"]) < datetime.utcnow():
+                return "This invite link has expired"
+        except ValueError:
+            pass
+    if invite["max_uses"] is not None and invite["uses"] >= invite["max_uses"]:
+        return "This invite link has already been used the maximum number of times"
+    return None
+
+
+@app.route("/api/groups/<int:group_id>/invites", methods=["GET"])
+@token_required
+def list_invites(group_id):
+    db = get_db()
+    if g.current_user_role != "superadmin":
+        my_m = db.execute(
+            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, g.current_user_id)
+        ).fetchone()
+        if not my_m or my_m["role"] != "group_admin":
+            return jsonify({"error": "Permission denied"}), 403
+    rows = db.execute(
+        """SELECT i.*, u.display_name as created_by_name
+           FROM group_invites i JOIN users u ON i.created_by = u.id
+           WHERE i.group_id = ?
+           ORDER BY i.revoked_at IS NOT NULL, i.created_at DESC""",
+        (group_id,)
+    ).fetchall()
+    return jsonify([{
+        "id": r["id"],
+        "token": r["token"],
+        "created_at": r["created_at"],
+        "created_by_name": r["created_by_name"],
+        "expires_at": r["expires_at"],
+        "max_uses": r["max_uses"],
+        "uses": r["uses"],
+        "revoked_at": r["revoked_at"],
+        "problem": _invite_problem(r),
+    } for r in rows])
+
+
+@app.route("/api/groups/<int:group_id>/invites/<int:invite_id>", methods=["DELETE"])
+@token_required
+def revoke_invite(group_id, invite_id):
+    db = get_db()
+    if g.current_user_role != "superadmin":
+        my_m = db.execute(
+            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, g.current_user_id)
+        ).fetchone()
+        if not my_m or my_m["role"] != "group_admin":
+            return jsonify({"error": "Permission denied"}), 403
+    row = db.execute(
+        "SELECT * FROM group_invites WHERE id = ? AND group_id = ?", (invite_id, group_id)
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "Invite not found"}), 404
+    if row["revoked_at"]:
+        return jsonify({"message": "Already revoked"})
+    db.execute("UPDATE group_invites SET revoked_at = ? WHERE id = ?",
+               (datetime.utcnow().isoformat(timespec="seconds"), invite_id))
+    db.commit()
+    return jsonify({"message": "Invite revoked"})
 
 @app.route("/api/invites/<token>", methods=["GET"])
 @limiter.limit("30 per hour")
 def get_invite(token):
     db = get_db()
     invite = db.execute("""
-        SELECT gi.group_id, g.name as group_name,
+        SELECT gi.*, g.name as group_name,
                (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count
         FROM group_invites gi JOIN groups g ON gi.group_id = g.id
         WHERE gi.token = ?
     """, (token,)).fetchone()
     if not invite:
         return jsonify({"error": "Invalid invite link"}), 404
+    problem = _invite_problem(invite)
+    if problem:
+        # A spent link reveals nothing about the group it pointed at.
+        return jsonify({"error": problem}), 410
     return jsonify({
         "token": token,
         "group_id": invite["group_id"],
@@ -1272,10 +1379,21 @@ def join_via_invite(token):
     ).fetchone()
     if not invite:
         return jsonify({"error": "Invalid invite link"}), 404
+    problem = _invite_problem(invite)
+    if problem:
+        return jsonify({"error": problem}), 410
     try:
         db.execute(
             "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')",
             (invite["group_id"], g.current_user_id)
+        )
+        # Counted only on a join that actually happened, and guarded by
+        # max_uses in SQL so two simultaneous joins cannot both slip past
+        # the check above.
+        db.execute(
+            """UPDATE group_invites SET uses = uses + 1
+               WHERE id = ? AND (max_uses IS NULL OR uses < max_uses)""",
+            (invite["id"],)
         )
         db.commit()
         return jsonify({"message": "Joined", "group_id": invite["group_id"]}), 201
