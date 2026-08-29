@@ -62,6 +62,11 @@ def _load_secret_key():
 app.config["SECRET_KEY"] = _load_secret_key()
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "./data/laptimes.db")
 
+# Nothing this API accepts is remotely this large; anything bigger is a
+# mistake or an attempt to fill the disk, and Flask rejects it with a 413
+# before a handler ever sees it.
+app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
+
 # ─── Client addresses behind the proxy ───────────────────────────────
 #
 # In the shipped stack nginx is the only hop, so exactly one entry of
@@ -112,6 +117,24 @@ def _ratelimited(e):
     return jsonify({
         "error": "Too many attempts. Wait a minute and try again."
     }), 429
+
+# Everything the client talks to is JSON, so the error paths are too —
+# otherwise the frontend gets Werkzeug's HTML page and fails to parse it.
+
+@app.errorhandler(413)
+def _too_large(e):
+    return jsonify({"error": "Request too large"}), 413
+
+@app.errorhandler(404)
+def _not_found(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Not found"}), 404
+    return e
+
+@app.errorhandler(500)
+def _server_error(e):
+    # The traceback still goes to the log; the client gets no internals.
+    return jsonify({"error": "Something went wrong on the server"}), 500
 
 # ─── Database ────────────────────────────────────────────────────────
 
@@ -479,6 +502,57 @@ def check_password(password, password_hash):
 # for deciding whether a username is registered.
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode()
 
+# ─── Input limits ────────────────────────────────────────────────────
+#
+# Free text was unbounded, so a single request could store a megabyte and
+# fill the volume behind the SQLite file. These caps are generous for real
+# use and are enforced on write rather than silently truncating.
+
+FIELD_LIMITS = {
+    "username": 64,
+    "display_name": 80,
+    "bio": 500,
+    "track": 120,
+    "car": 120,
+    "weather": 40,
+    "notes": 1000,
+    "recorded_at": 40,
+    "group_name": 80,
+    "group_description": 500,
+    "key_name": 100,
+    "client_id": 100,
+}
+
+# A lap between 1 ms and 24 hours. Wider than any real lap, narrow enough
+# that a bad value is caught rather than stored.
+MAX_LAPTIME_MS = 24 * 60 * 60 * 1000
+
+def clean_text(data, field, limit_key=None, default=""):
+    """Trimmed string for `field`, or None when it exceeds its limit."""
+    raw = data.get(field, default)
+    if raw is None:
+        raw = ""
+    text = str(raw).strip()
+    if len(text) > FIELD_LIMITS[limit_key or field]:
+        return None
+    return text
+
+def too_long(field, limit_key=None):
+    limit = FIELD_LIMITS[limit_key or field]
+    return jsonify({"error": f"{field.replace('_', ' ').capitalize()} must be at most {limit} characters"}), 400
+
+def parse_int(value, name, minimum=None, maximum=None):
+    """Return (value, None) or (None, error_response)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": f"{name} must be a whole number"}), 400)
+    if minimum is not None and n < minimum:
+        return None, (jsonify({"error": f"{name} must be at least {minimum}"}), 400)
+    if maximum is not None and n > maximum:
+        return None, (jsonify({"error": f"{name} must be at most {maximum}"}), 400)
+    return n, None
+
 # ─── Visibility ──────────────────────────────────────────────────────
 #
 # Groups are a privacy boundary: you see your own laps and the laps of people
@@ -531,11 +605,15 @@ def _is_group_admin_somewhere(db, user_id):
 @app.route("/api/auth/register", methods=["POST"])
 @limiter.limit("5 per hour; 20 per day")
 def register():
-    data = request.get_json()
-    username = data.get("username", "").strip().lower()
-    password = data.get("password", "")
-    display_name = data.get("display_name", "").strip()
+    data = request.get_json(silent=True) or {}
+    username = clean_text(data, "username").lower() if clean_text(data, "username") is not None else None
+    display_name = clean_text(data, "display_name")
+    password = data.get("password", "") or ""
 
+    if username is None:
+        return too_long("username")
+    if display_name is None:
+        return too_long("display_name")
     if not username or not password or not display_name:
         return jsonify({"error": "All fields required"}), 400
     err = validate_password(password)
@@ -567,7 +645,7 @@ def register():
 @limiter.limit("10 per minute; 50 per hour")
 @limiter.limit("5 per minute; 20 per hour", key_func=_rate_limit_key_username)
 def login():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     username = data.get("username", "").strip().lower()
     password = data.get("password", "")
 
@@ -619,9 +697,13 @@ def me():
 @app.route("/api/auth/profile", methods=["PUT"])
 @token_required
 def update_profile():
-    data = request.get_json()
-    display_name = data.get("display_name", "").strip()
-    bio = data.get("bio", "").strip()
+    data = request.get_json(silent=True) or {}
+    display_name = clean_text(data, "display_name")
+    bio = clean_text(data, "bio")
+    if display_name is None:
+        return too_long("display_name")
+    if bio is None:
+        return too_long("bio")
     if not display_name:
         return jsonify({"error": "Display name required"}), 400
     db = get_db()
@@ -684,7 +766,9 @@ def list_api_keys():
 @token_required
 def create_api_key():
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()[:100]
+    name = clean_text(data, "name", "key_name")
+    if name is None:
+        return too_long("key name", "key_name")
     if not name:
         return jsonify({"error": "Key name required"}), 400
 
@@ -817,7 +901,7 @@ def admin_list_users():
 def admin_update_user(user_id):
     if user_id == g.current_user_id:
         return jsonify({"error": "Cannot modify your own role"}), 400
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     role = data.get("role")
     if role not in ("member", "superadmin"):
         return jsonify({"error": "Invalid role"}), 400
@@ -859,6 +943,8 @@ def client_heartbeat():
     client_id = (data.get("client_id") or "").strip()
     if not client_id:
         return jsonify({"error": "client_id required"}), 400
+    if len(client_id) > FIELD_LIMITS["client_id"]:
+        return too_long("client_id")
     hostname = (data.get("hostname") or "").strip()[:200]
     platform = (data.get("platform") or "").strip()[:100]
     app_version = (data.get("app_version") or "").strip()[:50]
@@ -970,9 +1056,13 @@ def list_groups():
 @app.route("/api/groups", methods=["POST"])
 @superadmin_required
 def create_group():
-    data = request.get_json()
-    name = data.get("name", "").strip()
-    description = data.get("description", "").strip()
+    data = request.get_json(silent=True) or {}
+    name = clean_text(data, "name", "group_name")
+    description = clean_text(data, "description", "group_description")
+    if name is None:
+        return too_long("group name", "group_name")
+    if description is None:
+        return too_long("group description", "group_description")
     if not name:
         return jsonify({"error": "Group name required"}), 400
     db = get_db()
@@ -1031,10 +1121,14 @@ def update_group(group_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
-    description = data.get("description", "").strip()
+    data = request.get_json(silent=True) or {}
+    description = clean_text(data, "description", "group_description")
+    if description is None:
+        return too_long("group description", "group_description")
     if is_superadmin:
-        name = data.get("name", "").strip()
+        name = clean_text(data, "name", "group_name")
+        if name is None:
+            return too_long("group name", "group_name")
         if not name:
             return jsonify({"error": "Group name required"}), 400
         try:
@@ -1068,17 +1162,20 @@ def add_group_member(group_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
     role = data.get("role", "member")
     if role not in ("member", "group_admin"):
         return jsonify({"error": "Invalid role"}), 400
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
+    user_id, err = parse_int(user_id, "user_id", minimum=1)
+    if err:
+        return err
     try:
         db.execute(
             "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)",
-            (group_id, int(user_id), role)
+            (group_id, user_id, role)
         )
         db.commit()
         return jsonify({"message": "Member added"}), 201
@@ -1096,7 +1193,7 @@ def update_group_member(group_id, user_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     role = data.get("role")
     if role not in ("member", "group_admin"):
         return jsonify({"error": "Invalid role"}), 400
@@ -1190,43 +1287,58 @@ def join_via_invite(token):
 @app.route("/api/laptimes", methods=["POST"])
 @token_or_key_required
 def create_laptime():
-    data = request.get_json()
-    track = data.get("track", "").strip()
-    car = data.get("car", "").strip()
+    data = request.get_json(silent=True) or {}
+    track = clean_text(data, "track")
+    car = clean_text(data, "car")
+    weather = clean_text(data, "weather", default="Clear")
+    notes = clean_text(data, "notes")
+    recorded_at = clean_text(data, "recorded_at", default=datetime.utcnow().isoformat())
     laptime_ms = data.get("laptime_ms")
-    weather = data.get("weather", "Clear").strip()
-    notes = data.get("notes", "").strip()
-    recorded_at = data.get("recorded_at", datetime.utcnow().isoformat())
     target_user_id = data.get("user_id")
 
+    for name, value in (("track", track), ("car", car), ("weather", weather),
+                        ("notes", notes), ("recorded_at", recorded_at)):
+        if value is None:
+            return too_long(name)
     if not track or not car or laptime_ms is None:
         return jsonify({"error": "Track, car, and laptime required"}), 400
+
+    laptime_ms, err = parse_int(laptime_ms, "Laptime", minimum=1, maximum=MAX_LAPTIME_MS)
+    if err:
+        return err
 
     db = get_db()
     lap_owner_id = g.current_user_id
 
-    if target_user_id and int(target_user_id) != g.current_user_id:
+    if target_user_id is not None and str(target_user_id) != "":
+        target_user_id, err = parse_int(target_user_id, "user_id", minimum=1)
+        if err:
+            return err
+    else:
+        target_user_id = None
+
+    if target_user_id and target_user_id != g.current_user_id:
         # API keys are self-scoped: they can never attribute a lap to
         # another driver, whatever role the owning account holds.
         if getattr(g, "auth_method", "jwt") == "api_key":
             return jsonify({"error": "API keys can only record your own laps"}), 403
         if g.current_user_role == "superadmin":
-            lap_owner_id = int(target_user_id)
+            lap_owner_id = target_user_id
         else:
             shared = db.execute("""
                 SELECT 1 FROM group_members ga
                 JOIN group_members gm ON ga.group_id = gm.group_id
                 WHERE ga.user_id = ? AND ga.role = 'group_admin' AND gm.user_id = ?
-            """, (g.current_user_id, int(target_user_id))).fetchone()
+            """, (g.current_user_id, target_user_id)).fetchone()
             if shared:
-                lap_owner_id = int(target_user_id)
+                lap_owner_id = target_user_id
             else:
                 return jsonify({"error": "Permission denied"}), 403
 
     cursor = db.execute(
         """INSERT INTO laptimes (user_id, track, car, laptime_ms, weather, notes, recorded_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (lap_owner_id, track, car, int(laptime_ms), weather, notes, recorded_at),
+        (lap_owner_id, track, car, laptime_ms, weather, notes, recorded_at),
     )
     db.commit()
     return jsonify({"id": cursor.lastrowid, "message": "Lap recorded"}), 201
@@ -1297,19 +1409,24 @@ def update_laptime(lap_id):
     if not lap:
         return jsonify({"error": "Lap not found or not yours"}), 404
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    fields = {}
+    for name in ("track", "car", "weather", "notes", "recorded_at"):
+        value = clean_text(data, name, default=lap[name])
+        if value is None:
+            return too_long(name)
+        fields[name] = value
+    laptime_ms, err = parse_int(
+        data.get("laptime_ms", lap["laptime_ms"]), "Laptime",
+        minimum=1, maximum=MAX_LAPTIME_MS,
+    )
+    if err:
+        return err
     db.execute(
         """UPDATE laptimes SET track=?, car=?, laptime_ms=?, weather=?, notes=?, recorded_at=?
            WHERE id=?""",
-        (
-            data.get("track", lap["track"]),
-            data.get("car", lap["car"]),
-            int(data.get("laptime_ms", lap["laptime_ms"])),
-            data.get("weather", lap["weather"]),
-            data.get("notes", lap["notes"]),
-            data.get("recorded_at", lap["recorded_at"]),
-            lap_id,
-        ),
+        (fields["track"], fields["car"], laptime_ms, fields["weather"],
+         fields["notes"], fields["recorded_at"], lap_id),
     )
     db.commit()
     return jsonify({"message": "Updated"})
