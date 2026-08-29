@@ -36,7 +36,7 @@ import requests
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 ORG_NAME = "ACELaps"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
