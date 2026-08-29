@@ -1,0 +1,5 @@
+# Docker reads this, not .gitignore, and the build context is this directory.
+node_modules/
+vendor/
+.DS_Store
+*.md
