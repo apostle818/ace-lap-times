@@ -28,8 +28,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install ruff
-        run: pip install ruff==0.8.4
+      - name: Install tools
+        run: pip install ruff==0.8.4 pyyaml==6.0.2
 
       - name: Compile check
         run: |
