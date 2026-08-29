@@ -474,7 +474,13 @@ function msToLaptime(ms) {
 }
 function laptimeToMs(min, sec, mil) { return (parseInt(min)||0)*60000+(parseInt(sec)||0)*1000+(parseInt(mil)||0); }
 function getDriverColor(idx) { return DRIVER_COLORS[idx % DRIVER_COLORS.length]; }
-function escapeHtml(str) { const d = document.createElement('div'); d.textContent = str; return d.innerHTML; }
+// Escapes all five HTML-significant characters, quotes included. The quotes
+// matter: this helper's output is interpolated into double-quoted attributes
+// (track/car datalists, the profile inputs, the filter selects), and the
+// textContent/innerHTML round-trip this used to use escapes only & < >, so a
+// value containing a quote could close the attribute and add its own.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, c => HTML_ESCAPES[c]); }
 
 function userRole() { return state.user?.role || 'member'; }
 function isGroupAdmin() { return (state.user?.groups || []).some(g => g.group_role === 'group_admin'); }
