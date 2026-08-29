@@ -12,6 +12,7 @@ import socket
 import platform
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -72,6 +73,20 @@ class LapRecord:
 
 
 # ─── API Client ──────────────────────────────────────────────────────
+
+def _is_plaintext_remote(url: str) -> bool:
+    """
+    True when the URL is unencrypted and points somewhere other than this
+    machine. The API key travels on every upload, so it is worth saying so
+    once — but not for a loopback address, where there is no network to
+    listen on.
+    """
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    if parsed.scheme == "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host not in ("localhost", "127.0.0.1", "::1", "")
+
 
 class ClientIdConflict(Exception):
     """The server has this client_id registered to a different account."""
@@ -1310,6 +1325,7 @@ class MainWindow(QMainWindow):
         if not url:
             self._set_status("Enter the server URL")
             return
+        insecure = _is_plaintext_remote(url)
         if use_password:
             if not username or not password:
                 self._set_status("Enter your username and password")
@@ -1340,6 +1356,12 @@ class MainWindow(QMainWindow):
             if use_password:
                 self.pwd_toggle.setChecked(False)
 
+            if insecure:
+                self._log(
+                    "Note: this server uses plain HTTP, so your API key is sent "
+                    "unencrypted. Fine on your own network - see docs/TLS.md before "
+                    "using it across the internet."
+                )
             self.connection_status.setText(f"Connected as {display_name}")
             self.connection_status.setStyleSheet("color: #2ec866; font-size: 12px; font-weight: 600;")
             self.tray_status.setText(f"Connected: {display_name}")

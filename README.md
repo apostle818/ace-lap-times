@@ -76,6 +76,12 @@ is **not supported** — see [docs/BUILDS.md](docs/BUILDS.md).
 
 The first registered user automatically becomes superadmin.
 
+> **Keep port 8099 off the internet.** The stack speaks plain HTTP, so
+> passwords, session tokens and API keys cross the network unencrypted. That
+> is fine on a home LAN and not fine when port-forwarded. To reach it from
+> outside, use a VPN or put a TLS reverse proxy in front — see
+> [docs/TLS.md](docs/TLS.md).
+
 ### Tray app (Windows)
 
 **Easiest:** download `ACELapTracker.exe` from the
