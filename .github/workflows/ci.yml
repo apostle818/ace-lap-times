@@ -66,5 +66,5 @@ jobs:
       - name: Validate docker-compose.yml
         working-directory: ace-laptimes
         run: |
-          SECRET_KEY=ci-placeholder docker compose config --quiet
+          SECRET_KEY=$(openssl rand -hex 32) docker compose config --quiet
           echo "docker-compose.yml is valid"

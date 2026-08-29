@@ -14,7 +14,49 @@ import bcrypt
 import jwt
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
+
+# ─── Secret key ──────────────────────────────────────────────────────
+#
+# There is deliberately no fallback. A default here would be published in
+# this repository, and anyone holding it can forge a token for any account
+# and any role — so an unset or placeholder key has to stop the server
+# rather than quietly produce a working but wide-open instance.
+
+MIN_SECRET_KEY_LENGTH = 32
+
+# Values that have appeared in this repo's docs and compose file over time.
+# Someone who pastes one into .env is no better off than someone who set
+# nothing at all, so they are refused by name.
+_REJECTED_SECRET_KEYS = {
+    "dev-secret-key",
+    "change-me-to-a-random-string",
+    "your-random-secret-here",
+    "ci-placeholder",
+    "changeme",
+    "secret",
+}
+
+def _load_secret_key():
+    key = os.environ.get("SECRET_KEY", "").strip()
+    hint = "Generate one with:  openssl rand -hex 32"
+    if not key:
+        raise RuntimeError(
+            "SECRET_KEY is not set. The server will not start without one, "
+            f"because sessions signed with a guessable key are forgeable. {hint}"
+        )
+    if key.lower() in _REJECTED_SECRET_KEYS:
+        raise RuntimeError(
+            "SECRET_KEY is set to a well-known placeholder value from this "
+            f"project's documentation. Choose a real secret. {hint}"
+        )
+    if len(key) < MIN_SECRET_KEY_LENGTH:
+        raise RuntimeError(
+            f"SECRET_KEY is {len(key)} characters; at least "
+            f"{MIN_SECRET_KEY_LENGTH} are required. {hint}"
+        )
+    return key
+
+app.config["SECRET_KEY"] = _load_secret_key()
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "./data/laptimes.db")
 
 # ─── Database ────────────────────────────────────────────────────────

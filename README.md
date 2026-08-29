@@ -57,11 +57,14 @@ is **not supported** — see [docs/BUILDS.md](docs/BUILDS.md).
 
 1. Download [`ace-laptimes/docker-compose.yml`](ace-laptimes/docker-compose.yml)
 
-2. Create a `.env` file next to it:
-   ```env
-   SECRET_KEY=your-random-secret-here
+2. Create a `.env` file next to it, with a secret you generate yourself:
+   ```bash
+   echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
    ```
-   Generate one: `openssl rand -hex 32`
+   This key signs every login session. There is no default and no fallback —
+   the stack refuses to start without it, on purpose. Anyone who knows your
+   key can sign in as any user, including the superadmin, so treat it like a
+   password and never commit it.
 
 3. Start the stack:
    ```bash
