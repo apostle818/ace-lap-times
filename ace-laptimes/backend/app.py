@@ -1423,6 +1423,21 @@ def get_users():
 
 # ─── Export ──────────────────────────────────────────────────────────
 
+# Excel, LibreOffice and Sheets treat a cell starting with any of these as a
+# formula, so a lap note reading =cmd|'/c calc'!A1 executes when whoever runs
+# the instance opens the export. Any member can plant one.
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+def _csv_safe(value):
+    """Render a cell so a spreadsheet always treats it as text."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(_CSV_INJECTION_PREFIXES):
+        # A leading apostrophe is the standard escape and is not displayed.
+        return "'" + text
+    return text
+
 @app.route("/api/export/csv", methods=["GET"])
 @token_required
 def export_csv():
@@ -1445,7 +1460,11 @@ def export_csv():
         seconds = (ms % 60000) // 1000
         millis = ms % 1000
         formatted = f"{minutes}:{seconds:02d}.{millis:03d}"
-        writer.writerow([r["driver"], r["track"], r["car"], ms, formatted, r["weather"], r["notes"], r["recorded_at"]])
+        writer.writerow([
+            _csv_safe(r["driver"]), _csv_safe(r["track"]), _csv_safe(r["car"]),
+            ms, formatted, _csv_safe(r["weather"]), _csv_safe(r["notes"]),
+            _csv_safe(r["recorded_at"]),
+        ])
     return Response(
         output.getvalue(),
         mimetype="text/csv",
