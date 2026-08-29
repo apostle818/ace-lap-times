@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # gosu lets the entrypoint fix volume ownership as root and then hand the
 # application to an unprivileged user with a clean signal path.
