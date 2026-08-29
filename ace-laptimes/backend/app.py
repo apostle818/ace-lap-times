@@ -10,12 +10,131 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, g, Response
+from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import bcrypt
 import jwt
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
+
+# ─── Secret key ──────────────────────────────────────────────────────
+#
+# There is deliberately no fallback. A default here would be published in
+# this repository, and anyone holding it can forge a token for any account
+# and any role — so an unset or placeholder key has to stop the server
+# rather than quietly produce a working but wide-open instance.
+
+MIN_SECRET_KEY_LENGTH = 32
+
+# Values that have appeared in this repo's docs and compose file over time.
+# Someone who pastes one into .env is no better off than someone who set
+# nothing at all, so they are refused by name.
+_REJECTED_SECRET_KEYS = {
+    "dev-secret-key",
+    "change-me-to-a-random-string",
+    "your-random-secret-here",
+    "ci-placeholder",
+    "changeme",
+    "secret",
+}
+
+def _load_secret_key():
+    key = os.environ.get("SECRET_KEY", "").strip()
+    hint = "Generate one with:  openssl rand -hex 32"
+    if not key:
+        raise RuntimeError(
+            "SECRET_KEY is not set. The server will not start without one, "
+            f"because sessions signed with a guessable key are forgeable. {hint}"
+        )
+    if key.lower() in _REJECTED_SECRET_KEYS:
+        raise RuntimeError(
+            "SECRET_KEY is set to a well-known placeholder value from this "
+            f"project's documentation. Choose a real secret. {hint}"
+        )
+    if len(key) < MIN_SECRET_KEY_LENGTH:
+        raise RuntimeError(
+            f"SECRET_KEY is {len(key)} characters; at least "
+            f"{MIN_SECRET_KEY_LENGTH} are required. {hint}"
+        )
+    return key
+
+app.config["SECRET_KEY"] = _load_secret_key()
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "./data/laptimes.db")
+
+# Nothing this API accepts is remotely this large; anything bigger is a
+# mistake or an attempt to fill the disk, and Flask rejects it with a 413
+# before a handler ever sees it.
+app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
+
+# ─── Client addresses behind the proxy ───────────────────────────────
+#
+# In the shipped stack nginx is the only hop, so exactly one entry of
+# X-Forwarded-For is ours and the rest is whatever the client sent. ProxyFix
+# takes the correct one and puts it in request.remote_addr; nothing else in
+# the app reads the header directly.
+#
+# This has to be right for rate limiting to work at all: without it every
+# request appears to come from the nginx container and all users share a
+# single bucket. Set TRUSTED_PROXY_HOPS to 0 when the backend is exposed
+# directly (then no forwarding header is trusted), or higher when you run
+# additional proxies in front of nginx.
+
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
+if TRUSTED_PROXY_HOPS > 0:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=TRUSTED_PROXY_HOPS, x_proto=TRUSTED_PROXY_HOPS,
+        x_host=0, x_prefix=0,
+    )
+
+# ─── Rate limiting ───────────────────────────────────────────────────
+#
+# Credential endpoints get strict per-IP limits; everything else gets a
+# generous default that only catches runaway clients and scripted abuse.
+#
+# Storage is in-process, so with the default two gunicorn workers the real
+# ceiling is roughly double the configured number. That is accurate enough
+# to stop brute force and avoids making Redis a requirement for a homelab
+# deployment. Set RATELIMIT_STORAGE_URI to a shared backend if you scale out.
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["600 per hour"],
+    storage_uri=os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
+    strategy="fixed-window",
+    headers_enabled=True,
+)
+
+def _rate_limit_key_username():
+    """Limit by the username being attempted, so one account cannot be
+    ground down from many source addresses."""
+    data = request.get_json(silent=True) or {}
+    return (data.get("username") or "").strip().lower() or get_remote_address()
+
+@app.errorhandler(429)
+def _ratelimited(e):
+    return jsonify({
+        "error": "Too many attempts. Wait a minute and try again."
+    }), 429
+
+# Everything the client talks to is JSON, so the error paths are too —
+# otherwise the frontend gets Werkzeug's HTML page and fails to parse it.
+
+@app.errorhandler(413)
+def _too_large(e):
+    return jsonify({"error": "Request too large"}), 413
+
+@app.errorhandler(404)
+def _not_found(e):
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "Not found"}), 404
+    return e
+
+@app.errorhandler(500)
+def _server_error(e):
+    # The traceback still goes to the log; the client gets no internals.
+    return jsonify({"error": "Something went wrong on the server"}), 500
 
 # ─── Database ────────────────────────────────────────────────────────
 
@@ -45,6 +164,7 @@ def init_db():
             display_name TEXT NOT NULL,
             bio TEXT DEFAULT '',
             role TEXT NOT NULL DEFAULT 'member',
+            token_version INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS groups (
@@ -71,6 +191,10 @@ def init_db():
             token TEXT UNIQUE NOT NULL,
             created_by INTEGER NOT NULL,
             created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT,
+            max_uses INTEGER,
+            uses INTEGER NOT NULL DEFAULT 0,
+            revoked_at TEXT,
             FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
             FOREIGN KEY (created_by) REFERENCES users(id)
         );
@@ -127,6 +251,20 @@ def init_db():
     if 'bio' not in user_cols:
         db.execute("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''")
         db.commit()
+    if 'token_version' not in user_cols:
+        db.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
+        db.commit()
+    invite_cols = [r[1] for r in db.execute("PRAGMA table_info(group_invites)").fetchall()]
+    # Invites created before this release have no limits recorded. They are
+    # left usable rather than silently broken, but they now show up in the
+    # UI where a group admin can see and revoke them.
+    if 'expires_at' not in invite_cols:
+        db.execute("ALTER TABLE group_invites ADD COLUMN expires_at TEXT")
+        db.execute("ALTER TABLE group_invites ADD COLUMN max_uses INTEGER")
+        db.execute("ALTER TABLE group_invites ADD COLUMN uses INTEGER NOT NULL DEFAULT 0")
+        db.execute("ALTER TABLE group_invites ADD COLUMN revoked_at TEXT")
+        db.commit()
+
     group_cols = [r[1] for r in db.execute("PRAGMA table_info(groups)").fetchall()]
     if 'description' not in group_cols:
         db.execute("ALTER TABLE groups ADD COLUMN description TEXT DEFAULT ''")
@@ -235,12 +373,22 @@ def _authenticate_api_key(presented):
 
 # ─── Auth helpers ────────────────────────────────────────────────────
 
-def create_token(user_id, username, role):
+# A token identifies who is asking; it never says what they are allowed to
+# do. Role, and the account's continued existence, are read from the database
+# on every request — a token that carried its own role stayed superadmin for
+# its full lifetime after the account was demoted, and kept working after the
+# account was deleted outright.
+TOKEN_TTL = timedelta(days=int(os.environ.get("SESSION_DAYS", "7")))
+
+def create_token(user_id, username, token_version):
     payload = {
         "user_id": user_id,
         "username": username,
-        "role": role,
-        "exp": datetime.utcnow() + timedelta(days=30),
+        # Bumped in the users row whenever sessions must be cut off; a token
+        # carrying a stale value is refused. This is what makes a demotion,
+        # a deletion or a forced sign-out take effect immediately.
+        "tv": token_version,
+        "exp": datetime.utcnow() + TOKEN_TTL,
     }
     return jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
 
@@ -251,14 +399,24 @@ def _parse_token():
     token = auth_header[7:]
     try:
         data = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
-        g.current_user_id = data["user_id"]
-        g.current_username = data["username"]
-        g.current_user_role = data.get("role", "member")
-        return None
     except jwt.ExpiredSignatureError:
         return jsonify({"error": "Token expired"}), 401
     except jwt.InvalidTokenError:
         return jsonify({"error": "Invalid token"}), 401
+
+    user = get_db().execute(
+        "SELECT id, username, role, token_version FROM users WHERE id = ?",
+        (data.get("user_id"),),
+    ).fetchone()
+    if not user:
+        return jsonify({"error": "Session no longer valid"}), 401
+    if data.get("tv") != user["token_version"]:
+        return jsonify({"error": "Session expired - please sign in again"}), 401
+
+    g.current_user_id = user["id"]
+    g.current_username = user["username"]
+    g.current_user_role = user["role"]
+    return None
 
 def token_required(f):
     """
@@ -316,21 +474,168 @@ def superadmin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+# ─── Passwords ───────────────────────────────────────────────────────
+
+MIN_PASSWORD_LENGTH = 12
+# bcrypt refuses anything longer outright rather than truncating, so reject
+# it here with a clear message instead of raising deep in the hash call.
+MAX_PASSWORD_BYTES = 72
+
+# A handful of passwords that show up at the top of every breach corpus.
+# Not a substitute for a real list, but it catches the worst choices.
+_COMMON_PASSWORDS = {
+    "password", "password1", "password123", "passw0rd", "123456", "1234567",
+    "12345678", "123456789", "1234567890", "qwerty", "qwerty123", "iloveyou",
+    "admin", "administrator", "welcome", "welcome1", "letmein", "monkey",
+    "abc123", "football", "baseball", "dragon", "sunshine", "princess",
+    "changeme", "secret", "trustno1", "assettocorsa", "acelaptracker",
+}
+
+def validate_password(password):
+    """Return an error string, or None when the password is acceptable."""
+    if len(password.encode()) > MAX_PASSWORD_BYTES:
+        return f"Password must be at most {MAX_PASSWORD_BYTES} bytes"
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+    if password.lower() in _COMMON_PASSWORDS:
+        return "That password is too common - pick something else"
+    return None
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def check_password(password, password_hash):
+    """Verify a password, returning False rather than raising on bad input."""
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except (ValueError, TypeError):
+        return False
+
+# Verified against when the username does not exist, so that a login attempt
+# on an unknown account costs the same as one on a real account. Without it
+# the miss returns in ~2 ms and the hit in ~280 ms, which is a clean oracle
+# for deciding whether a username is registered.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode()
+
+# ─── Input limits ────────────────────────────────────────────────────
+#
+# Free text was unbounded, so a single request could store a megabyte and
+# fill the volume behind the SQLite file. These caps are generous for real
+# use and are enforced on write rather than silently truncating.
+
+FIELD_LIMITS = {
+    "username": 64,
+    "display_name": 80,
+    "bio": 500,
+    "track": 120,
+    "car": 120,
+    "weather": 40,
+    "notes": 1000,
+    "recorded_at": 40,
+    "group_name": 80,
+    "group_description": 500,
+    "key_name": 100,
+    "client_id": 100,
+}
+
+# A lap between 1 ms and 24 hours. Wider than any real lap, narrow enough
+# that a bad value is caught rather than stored.
+MAX_LAPTIME_MS = 24 * 60 * 60 * 1000
+
+def clean_text(data, field, limit_key=None, default=""):
+    """Trimmed string for `field`, or None when it exceeds its limit."""
+    raw = data.get(field, default)
+    if raw is None:
+        raw = ""
+    text = str(raw).strip()
+    if len(text) > FIELD_LIMITS[limit_key or field]:
+        return None
+    return text
+
+def too_long(field, limit_key=None):
+    limit = FIELD_LIMITS[limit_key or field]
+    return jsonify({"error": f"{field.replace('_', ' ').capitalize()} must be at most {limit} characters"}), 400
+
+def parse_int(value, name, minimum=None, maximum=None):
+    """Return (value, None) or (None, error_response)."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None, (jsonify({"error": f"{name} must be a whole number"}), 400)
+    if minimum is not None and n < minimum:
+        return None, (jsonify({"error": f"{name} must be at least {minimum}"}), 400)
+    if maximum is not None and n > maximum:
+        return None, (jsonify({"error": f"{name} must be at most {maximum}"}), 400)
+    return n, None
+
+# ─── Visibility ──────────────────────────────────────────────────────
+#
+# Groups are a privacy boundary: you see your own laps and the laps of people
+# you share at least one group with, and nothing else. A superadmin sees
+# everything. Before this, every read endpoint took a caller-supplied user_id
+# and answered for any account on the instance, so group membership gated
+# writes but not a single read.
+#
+# The user directory (/api/meta/users) is deliberately not scoped this way
+# for group admins — they need to see who exists in order to add members —
+# but it carries no lap data, only id, username and display name.
+
+def _visible_user_ids(db, user_id):
+    """Ids whose lap data `user_id` may read: themselves plus co-members."""
+    rows = db.execute(
+        """SELECT DISTINCT theirs.user_id
+           FROM group_members mine
+           JOIN group_members theirs ON mine.group_id = theirs.group_id
+           WHERE mine.user_id = ?""",
+        (user_id,),
+    ).fetchall()
+    ids = {r["user_id"] for r in rows}
+    ids.add(user_id)  # you can always see yourself, groups or not
+    return ids
+
+def _visibility_clause(column):
+    """
+    SQL fragment and params restricting `column` to the visible set. Returns
+    ("", []) for a superadmin. The set always contains the caller, so the IN
+    list is never empty.
+    """
+    if g.current_user_role == "superadmin":
+        return "", []
+    ids = sorted(_visible_user_ids(get_db(), g.current_user_id))
+    return f" AND {column} IN ({','.join('?' * len(ids))})", ids
+
+def _can_view_user(target_user_id):
+    if g.current_user_role == "superadmin":
+        return True
+    return int(target_user_id) in _visible_user_ids(get_db(), g.current_user_id)
+
+def _is_group_admin_somewhere(db, user_id):
+    return db.execute(
+        "SELECT 1 FROM group_members WHERE user_id = ? AND role = 'group_admin'",
+        (user_id,),
+    ).fetchone() is not None
+
 # ─── Auth routes ─────────────────────────────────────────────────────
 
 @app.route("/api/auth/register", methods=["POST"])
+@limiter.limit("5 per hour; 20 per day")
 def register():
-    data = request.get_json()
-    username = data.get("username", "").strip().lower()
-    password = data.get("password", "")
-    display_name = data.get("display_name", "").strip()
+    data = request.get_json(silent=True) or {}
+    username = clean_text(data, "username").lower() if clean_text(data, "username") is not None else None
+    display_name = clean_text(data, "display_name")
+    password = data.get("password", "") or ""
 
+    if username is None:
+        return too_long("username")
+    if display_name is None:
+        return too_long("display_name")
     if not username or not password or not display_name:
         return jsonify({"error": "All fields required"}), 400
-    if len(password) < 4:
-        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    err = validate_password(password)
+    if err:
+        return jsonify({"error": err}), 400
 
-    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    password_hash = hash_password(password)
     db = get_db()
 
     count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -343,7 +648,7 @@ def register():
         )
         db.commit()
         user_id = cursor.lastrowid
-        token = create_token(user_id, username, role)
+        token = create_token(user_id, username, 0)
         return jsonify({
             "token": token,
             "user": {"id": user_id, "username": username, "display_name": display_name, "role": role, "groups": []}
@@ -352,14 +657,20 @@ def register():
         return jsonify({"error": "Username already taken"}), 409
 
 @app.route("/api/auth/login", methods=["POST"])
+@limiter.limit("10 per minute; 50 per hour")
+@limiter.limit("5 per minute; 20 per hour", key_func=_rate_limit_key_username)
 def login():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     username = data.get("username", "").strip().lower()
     password = data.get("password", "")
 
     db = get_db()
     user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+    # Hash unconditionally, against a dummy when the username is unknown, so
+    # both outcomes take the same time and neither confirms the account exists.
+    expected_hash = user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+    password_ok = check_password(password, expected_hash)
+    if not user or not password_ok:
         return jsonify({"error": "Invalid credentials"}), 401
 
     groups = db.execute("""
@@ -368,7 +679,7 @@ def login():
         WHERE gm.user_id = ?
     """, (user["id"],)).fetchall()
 
-    token = create_token(user["id"], user["username"], user["role"])
+    token = create_token(user["id"], user["username"], user["token_version"])
     return jsonify({
         "token": token,
         "user": {
@@ -401,9 +712,13 @@ def me():
 @app.route("/api/auth/profile", methods=["PUT"])
 @token_required
 def update_profile():
-    data = request.get_json()
-    display_name = data.get("display_name", "").strip()
-    bio = data.get("bio", "").strip()
+    data = request.get_json(silent=True) or {}
+    display_name = clean_text(data, "display_name")
+    bio = clean_text(data, "bio")
+    if display_name is None:
+        return too_long("display_name")
+    if bio is None:
+        return too_long("bio")
     if not display_name:
         return jsonify({"error": "Display name required"}), 400
     db = get_db()
@@ -411,6 +726,29 @@ def update_profile():
                (display_name, bio, g.current_user_id))
     db.commit()
     return jsonify({"message": "Profile updated"})
+
+@app.route("/api/auth/sessions", methods=["DELETE"])
+@token_required
+def revoke_sessions():
+    """
+    Sign out everywhere. Invalidates every token issued to this account —
+    including any copied out of another browser — and returns a fresh one so
+    the caller stays signed in here.
+    """
+    db = get_db()
+    db.execute(
+        "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
+        (g.current_user_id,),
+    )
+    db.commit()
+    user = db.execute(
+        "SELECT id, username, token_version FROM users WHERE id = ?",
+        (g.current_user_id,),
+    ).fetchone()
+    return jsonify({
+        "message": "All other sessions signed out",
+        "token": create_token(user["id"], user["username"], user["token_version"]),
+    })
 
 # ─── API key management ──────────────────────────────────────────────
 
@@ -439,10 +777,13 @@ def list_api_keys():
     return jsonify([_key_row_to_json(r) for r in rows])
 
 @app.route("/api/keys", methods=["POST"])
+@limiter.limit("10 per hour")
 @token_required
 def create_api_key():
     data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()[:100]
+    name = clean_text(data, "name", "key_name")
+    if name is None:
+        return too_long("key name", "key_name")
     if not name:
         return jsonify({"error": "Key name required"}), 400
 
@@ -535,6 +876,8 @@ def admin_revoke_api_key(key_id):
 @app.route("/api/users/<int:user_id>", methods=["GET"])
 @token_required
 def get_user_profile(user_id):
+    if not _can_view_user(user_id):
+        return jsonify({"error": "User not found"}), 404
     db = get_db()
     user = db.execute(
         "SELECT id, username, display_name, bio, role, created_at FROM users WHERE id = ?",
@@ -573,12 +916,18 @@ def admin_list_users():
 def admin_update_user(user_id):
     if user_id == g.current_user_id:
         return jsonify({"error": "Cannot modify your own role"}), 400
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     role = data.get("role")
     if role not in ("member", "superadmin"):
         return jsonify({"error": "Invalid role"}), 400
     db = get_db()
-    db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+    # Bumping token_version cuts off sessions issued under the old role, so a
+    # demotion takes effect now rather than whenever the token happens to
+    # expire. The user signs in again and gets the role they actually have.
+    db.execute(
+        "UPDATE users SET role = ?, token_version = token_version + 1 WHERE id = ?",
+        (role, user_id),
+    )
     db.commit()
     return jsonify({"message": "Updated"})
 
@@ -588,18 +937,39 @@ def admin_delete_user(user_id):
     if user_id == g.current_user_id:
         return jsonify({"error": "Cannot delete yourself"}), 400
     db = get_db()
-    db.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
-    db.execute("DELETE FROM laptimes WHERE user_id = ?", (user_id,))
-    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    db.commit()
+    target = db.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not target:
+        return jsonify({"error": "User not found"}), 404
+
+    # groups.created_by and group_invites.created_by have no cascade, so
+    # deleting someone who created a group used to leave the delete to fail
+    # partway through with rows already gone. Authorship moves to the
+    # superadmin doing the deletion, which keeps the group intact and its
+    # history honest about who owns it now.
+    try:
+        with db:
+            db.execute("UPDATE groups SET created_by = ? WHERE created_by = ?",
+                       (g.current_user_id, user_id))
+            db.execute("UPDATE group_invites SET created_by = ? WHERE created_by = ?",
+                       (g.current_user_id, user_id))
+            db.execute("DELETE FROM group_members WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM laptimes WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM api_keys WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM client_sessions WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    except sqlite3.IntegrityError:
+        # `with db` rolled the whole thing back, so nothing is half-deleted.
+        return jsonify({
+            "error": "Could not delete this user - something still references them"
+        }), 409
     return jsonify({"message": "Deleted"})
 
 # ─── Client session tracking ─────────────────────────────────────────
 
 def _client_ip():
-    fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    # ProxyFix has already resolved this from X-Forwarded-For using the
+    # trusted hop count; reading the raw header here would let any client
+    # name its own address.
     return request.remote_addr or ""
 
 @app.route("/api/client/heartbeat", methods=["POST"])
@@ -609,6 +979,8 @@ def client_heartbeat():
     client_id = (data.get("client_id") or "").strip()
     if not client_id:
         return jsonify({"error": "client_id required"}), 400
+    if len(client_id) > FIELD_LIMITS["client_id"]:
+        return too_long("client_id")
     hostname = (data.get("hostname") or "").strip()[:200]
     platform = (data.get("platform") or "").strip()[:100]
     app_version = (data.get("app_version") or "").strip()[:50]
@@ -620,14 +992,22 @@ def client_heartbeat():
     existing = db.execute(
         "SELECT id, user_id FROM client_sessions WHERE client_id = ?", (client_id,)
     ).fetchone()
+    if existing and existing["user_id"] != g.current_user_id:
+        # client_id comes from the caller. The update used to reassign the row
+        # to whoever sent it, so anyone who learned another machine's id could
+        # take over its entry in the admin Connected Clients panel and put
+        # their own hostname and address against that driver's name.
+        return jsonify({
+            "error": "That client_id belongs to another account"
+        }), 409
     if existing:
         db.execute(
             """UPDATE client_sessions
-               SET user_id = ?, hostname = ?, platform = ?, app_version = ?,
+               SET hostname = ?, platform = ?, app_version = ?,
                    user_agent = ?, ip_address = ?, last_seen_at = ?, disconnected_at = NULL
-               WHERE client_id = ?""",
-            (g.current_user_id, hostname, platform, app_version,
-             user_agent, ip, now, client_id),
+               WHERE client_id = ? AND user_id = ?""",
+            (hostname, platform, app_version,
+             user_agent, ip, now, client_id, g.current_user_id),
         )
     else:
         db.execute(
@@ -712,9 +1092,13 @@ def list_groups():
 @app.route("/api/groups", methods=["POST"])
 @superadmin_required
 def create_group():
-    data = request.get_json()
-    name = data.get("name", "").strip()
-    description = data.get("description", "").strip()
+    data = request.get_json(silent=True) or {}
+    name = clean_text(data, "name", "group_name")
+    description = clean_text(data, "description", "group_description")
+    if name is None:
+        return too_long("group name", "group_name")
+    if description is None:
+        return too_long("group description", "group_description")
     if not name:
         return jsonify({"error": "Group name required"}), 400
     db = get_db()
@@ -773,10 +1157,14 @@ def update_group(group_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
-    description = data.get("description", "").strip()
+    data = request.get_json(silent=True) or {}
+    description = clean_text(data, "description", "group_description")
+    if description is None:
+        return too_long("group description", "group_description")
     if is_superadmin:
-        name = data.get("name", "").strip()
+        name = clean_text(data, "name", "group_name")
+        if name is None:
+            return too_long("group name", "group_name")
         if not name:
             return jsonify({"error": "Group name required"}), 400
         try:
@@ -810,17 +1198,20 @@ def add_group_member(group_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
     role = data.get("role", "member")
     if role not in ("member", "group_admin"):
         return jsonify({"error": "Invalid role"}), 400
     if not user_id:
         return jsonify({"error": "user_id required"}), 400
+    user_id, err = parse_int(user_id, "user_id", minimum=1)
+    if err:
+        return err
     try:
         db.execute(
             "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)",
-            (group_id, int(user_id), role)
+            (group_id, user_id, role)
         )
         db.commit()
         return jsonify({"message": "Member added"}), 201
@@ -838,7 +1229,7 @@ def update_group_member(group_id, user_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     role = data.get("role")
     if role not in ("member", "group_admin"):
         return jsonify({"error": "Invalid role"}), 400
@@ -880,25 +1271,118 @@ def create_invite(group_id):
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
+    data = request.get_json(silent=True) or {}
+
+    expires_at = None
+    raw_days = data.get("expires_in_days", 7)
+    if raw_days not in (None, "", 0, "0"):
+        days, err = parse_int(raw_days, "expires_in_days", minimum=1, maximum=365)
+        if err:
+            return err
+        expires_at = (datetime.utcnow() + timedelta(days=days)).isoformat(timespec="seconds")
+
+    max_uses = None
+    raw_uses = data.get("max_uses")
+    if raw_uses not in (None, "", 0, "0"):
+        max_uses, err = parse_int(raw_uses, "max_uses", minimum=1, maximum=1000)
+        if err:
+            return err
+
     token = secrets.token_urlsafe(16)
     db.execute(
-        "INSERT INTO group_invites (group_id, token, created_by) VALUES (?, ?, ?)",
-        (group_id, token, g.current_user_id)
+        """INSERT INTO group_invites (group_id, token, created_by, expires_at, max_uses)
+           VALUES (?, ?, ?, ?, ?)""",
+        (group_id, token, g.current_user_id, expires_at, max_uses)
     )
     db.commit()
-    return jsonify({"token": token}), 201
+    return jsonify({"token": token, "expires_at": expires_at, "max_uses": max_uses}), 201
+
+
+def _invite_problem(invite):
+    """Why this invite cannot be used, or None when it is still good."""
+    if invite["revoked_at"]:
+        return "This invite link has been revoked"
+    if invite["expires_at"]:
+        try:
+            if datetime.fromisoformat(invite["expires_at"]) < datetime.utcnow():
+                return "This invite link has expired"
+        except ValueError:
+            pass
+    if invite["max_uses"] is not None and invite["uses"] >= invite["max_uses"]:
+        return "This invite link has already been used the maximum number of times"
+    return None
+
+
+@app.route("/api/groups/<int:group_id>/invites", methods=["GET"])
+@token_required
+def list_invites(group_id):
+    db = get_db()
+    if g.current_user_role != "superadmin":
+        my_m = db.execute(
+            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, g.current_user_id)
+        ).fetchone()
+        if not my_m or my_m["role"] != "group_admin":
+            return jsonify({"error": "Permission denied"}), 403
+    rows = db.execute(
+        """SELECT i.*, u.display_name as created_by_name
+           FROM group_invites i JOIN users u ON i.created_by = u.id
+           WHERE i.group_id = ?
+           ORDER BY i.revoked_at IS NOT NULL, i.created_at DESC""",
+        (group_id,)
+    ).fetchall()
+    return jsonify([{
+        "id": r["id"],
+        "token": r["token"],
+        "created_at": r["created_at"],
+        "created_by_name": r["created_by_name"],
+        "expires_at": r["expires_at"],
+        "max_uses": r["max_uses"],
+        "uses": r["uses"],
+        "revoked_at": r["revoked_at"],
+        "problem": _invite_problem(r),
+    } for r in rows])
+
+
+@app.route("/api/groups/<int:group_id>/invites/<int:invite_id>", methods=["DELETE"])
+@token_required
+def revoke_invite(group_id, invite_id):
+    db = get_db()
+    if g.current_user_role != "superadmin":
+        my_m = db.execute(
+            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, g.current_user_id)
+        ).fetchone()
+        if not my_m or my_m["role"] != "group_admin":
+            return jsonify({"error": "Permission denied"}), 403
+    row = db.execute(
+        "SELECT * FROM group_invites WHERE id = ? AND group_id = ?", (invite_id, group_id)
+    ).fetchone()
+    if not row:
+        return jsonify({"error": "Invite not found"}), 404
+    if row["revoked_at"]:
+        return jsonify({"message": "Already revoked"})
+    db.execute("UPDATE group_invites SET revoked_at = ? WHERE id = ?",
+               (datetime.utcnow().isoformat(timespec="seconds"), invite_id))
+    db.commit()
+    return jsonify({"message": "Invite revoked"})
 
 @app.route("/api/invites/<token>", methods=["GET"])
+@limiter.limit("30 per hour")
 def get_invite(token):
     db = get_db()
     invite = db.execute("""
-        SELECT gi.group_id, g.name as group_name,
+        SELECT gi.*, g.name as group_name,
                (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) as member_count
         FROM group_invites gi JOIN groups g ON gi.group_id = g.id
         WHERE gi.token = ?
     """, (token,)).fetchone()
     if not invite:
         return jsonify({"error": "Invalid invite link"}), 404
+    problem = _invite_problem(invite)
+    if problem:
+        # A spent link reveals nothing about the group it pointed at.
+        return jsonify({"error": problem}), 410
     return jsonify({
         "token": token,
         "group_id": invite["group_id"],
@@ -907,6 +1391,7 @@ def get_invite(token):
     })
 
 @app.route("/api/invites/<token>/join", methods=["POST"])
+@limiter.limit("20 per hour")
 @token_required
 def join_via_invite(token):
     db = get_db()
@@ -915,10 +1400,21 @@ def join_via_invite(token):
     ).fetchone()
     if not invite:
         return jsonify({"error": "Invalid invite link"}), 404
+    problem = _invite_problem(invite)
+    if problem:
+        return jsonify({"error": problem}), 410
     try:
         db.execute(
             "INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, 'member')",
             (invite["group_id"], g.current_user_id)
+        )
+        # Counted only on a join that actually happened, and guarded by
+        # max_uses in SQL so two simultaneous joins cannot both slip past
+        # the check above.
+        db.execute(
+            """UPDATE group_invites SET uses = uses + 1
+               WHERE id = ? AND (max_uses IS NULL OR uses < max_uses)""",
+            (invite["id"],)
         )
         db.commit()
         return jsonify({"message": "Joined", "group_id": invite["group_id"]}), 201
@@ -930,43 +1426,58 @@ def join_via_invite(token):
 @app.route("/api/laptimes", methods=["POST"])
 @token_or_key_required
 def create_laptime():
-    data = request.get_json()
-    track = data.get("track", "").strip()
-    car = data.get("car", "").strip()
+    data = request.get_json(silent=True) or {}
+    track = clean_text(data, "track")
+    car = clean_text(data, "car")
+    weather = clean_text(data, "weather", default="Clear")
+    notes = clean_text(data, "notes")
+    recorded_at = clean_text(data, "recorded_at", default=datetime.utcnow().isoformat())
     laptime_ms = data.get("laptime_ms")
-    weather = data.get("weather", "Clear").strip()
-    notes = data.get("notes", "").strip()
-    recorded_at = data.get("recorded_at", datetime.utcnow().isoformat())
     target_user_id = data.get("user_id")
 
+    for name, value in (("track", track), ("car", car), ("weather", weather),
+                        ("notes", notes), ("recorded_at", recorded_at)):
+        if value is None:
+            return too_long(name)
     if not track or not car or laptime_ms is None:
         return jsonify({"error": "Track, car, and laptime required"}), 400
+
+    laptime_ms, err = parse_int(laptime_ms, "Laptime", minimum=1, maximum=MAX_LAPTIME_MS)
+    if err:
+        return err
 
     db = get_db()
     lap_owner_id = g.current_user_id
 
-    if target_user_id and int(target_user_id) != g.current_user_id:
+    if target_user_id is not None and str(target_user_id) != "":
+        target_user_id, err = parse_int(target_user_id, "user_id", minimum=1)
+        if err:
+            return err
+    else:
+        target_user_id = None
+
+    if target_user_id and target_user_id != g.current_user_id:
         # API keys are self-scoped: they can never attribute a lap to
         # another driver, whatever role the owning account holds.
         if getattr(g, "auth_method", "jwt") == "api_key":
             return jsonify({"error": "API keys can only record your own laps"}), 403
         if g.current_user_role == "superadmin":
-            lap_owner_id = int(target_user_id)
+            lap_owner_id = target_user_id
         else:
             shared = db.execute("""
                 SELECT 1 FROM group_members ga
                 JOIN group_members gm ON ga.group_id = gm.group_id
                 WHERE ga.user_id = ? AND ga.role = 'group_admin' AND gm.user_id = ?
-            """, (g.current_user_id, int(target_user_id))).fetchone()
+            """, (g.current_user_id, target_user_id)).fetchone()
             if shared:
-                lap_owner_id = int(target_user_id)
+                lap_owner_id = target_user_id
             else:
                 return jsonify({"error": "Permission denied"}), 403
 
     cursor = db.execute(
         """INSERT INTO laptimes (user_id, track, car, laptime_ms, weather, notes, recorded_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (lap_owner_id, track, car, int(laptime_ms), weather, notes, recorded_at),
+        (lap_owner_id, track, car, laptime_ms, weather, notes, recorded_at),
     )
     db.commit()
     return jsonify({"id": cursor.lastrowid, "message": "Lap recorded"}), 201
@@ -984,10 +1495,18 @@ def get_laptimes():
         FROM laptimes l JOIN users u ON l.user_id = u.id
         WHERE 1=1
     """
-    params = []
+    scope_sql, scope_params = _visibility_clause("l.user_id")
+    query += scope_sql
+    params = list(scope_params)
     if user_filter:
+        try:
+            user_filter = int(user_filter)
+        except (TypeError, ValueError):
+            return jsonify({"error": "user_id must be a number"}), 400
+        if not _can_view_user(user_filter):
+            return jsonify({"error": "Driver not found"}), 404
         query += " AND l.user_id = ?"
-        params.append(int(user_filter))
+        params.append(user_filter)
     if track_filter:
         query += " AND l.track = ?"
         params.append(track_filter)
@@ -1029,19 +1548,24 @@ def update_laptime(lap_id):
     if not lap:
         return jsonify({"error": "Lap not found or not yours"}), 404
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    fields = {}
+    for name in ("track", "car", "weather", "notes", "recorded_at"):
+        value = clean_text(data, name, default=lap[name])
+        if value is None:
+            return too_long(name)
+        fields[name] = value
+    laptime_ms, err = parse_int(
+        data.get("laptime_ms", lap["laptime_ms"]), "Laptime",
+        minimum=1, maximum=MAX_LAPTIME_MS,
+    )
+    if err:
+        return err
     db.execute(
         """UPDATE laptimes SET track=?, car=?, laptime_ms=?, weather=?, notes=?, recorded_at=?
            WHERE id=?""",
-        (
-            data.get("track", lap["track"]),
-            data.get("car", lap["car"]),
-            int(data.get("laptime_ms", lap["laptime_ms"])),
-            data.get("weather", lap["weather"]),
-            data.get("notes", lap["notes"]),
-            data.get("recorded_at", lap["recorded_at"]),
-            lap_id,
-        ),
+        (fields["track"], fields["car"], laptime_ms, fields["weather"],
+         fields["notes"], fields["recorded_at"], lap_id),
     )
     db.commit()
     return jsonify({"message": "Updated"})
@@ -1060,7 +1584,9 @@ def leaderboard():
         FROM laptimes l JOIN users u ON l.user_id = u.id
         WHERE 1=1
     """
-    params = []
+    scope_sql, scope_params = _visibility_clause("l.user_id")
+    query += scope_sql
+    params = list(scope_params)
     if track:
         query += " AND l.track = ?"
         params.append(track)
@@ -1075,6 +1601,12 @@ def leaderboard():
 @token_required
 def personal_bests():
     user_id = request.args.get("user_id", g.current_user_id)
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id must be a number"}), 400
+    if not _can_view_user(user_id):
+        return jsonify({"error": "Driver not found"}), 404
     db = get_db()
     rows = db.execute(
         """SELECT track, car, MIN(laptime_ms) as best_time, COUNT(*) as attempts
@@ -1090,6 +1622,12 @@ def progress():
     track = request.args.get("track")
     car = request.args.get("car")
     user_id = request.args.get("user_id", g.current_user_id)
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "user_id must be a number"}), 400
+    if not _can_view_user(user_id):
+        return jsonify({"error": "Driver not found"}), 404
     db = get_db()
     query = "SELECT laptime_ms, recorded_at, weather, notes FROM laptimes WHERE user_id = ?"
     params = [user_id]
@@ -1109,33 +1647,73 @@ def progress():
 @token_or_key_required
 def get_tracks():
     db = get_db()
-    rows = db.execute("SELECT DISTINCT track FROM laptimes ORDER BY track").fetchall()
+    scope_sql, scope_params = _visibility_clause("user_id")
+    rows = db.execute(
+        f"SELECT DISTINCT track FROM laptimes WHERE 1=1{scope_sql} ORDER BY track",
+        scope_params,
+    ).fetchall()
     return jsonify([r["track"] for r in rows])
 
 @app.route("/api/meta/cars", methods=["GET"])
 @token_or_key_required
 def get_cars():
     db = get_db()
-    rows = db.execute("SELECT DISTINCT car FROM laptimes ORDER BY car").fetchall()
+    scope_sql, scope_params = _visibility_clause("user_id")
+    rows = db.execute(
+        f"SELECT DISTINCT car FROM laptimes WHERE 1=1{scope_sql} ORDER BY car",
+        scope_params,
+    ).fetchall()
     return jsonify([r["car"] for r in rows])
 
 @app.route("/api/meta/users", methods=["GET"])
 @token_required
 def get_users():
     db = get_db()
-    rows = db.execute("SELECT id, username, display_name FROM users ORDER BY display_name").fetchall()
+    # Group admins need the full directory to add people to their groups;
+    # a plain member only ever sees the people they already share a group
+    # with. Either way this returns no lap data.
+    if g.current_user_role == "superadmin" or _is_group_admin_somewhere(db, g.current_user_id):
+        rows = db.execute(
+            "SELECT id, username, display_name FROM users ORDER BY display_name"
+        ).fetchall()
+    else:
+        ids = sorted(_visible_user_ids(db, g.current_user_id))
+        rows = db.execute(
+            f"""SELECT id, username, display_name FROM users
+                WHERE id IN ({','.join('?' * len(ids))}) ORDER BY display_name""",
+            ids,
+        ).fetchall()
     return jsonify([dict(r) for r in rows])
 
 # ─── Export ──────────────────────────────────────────────────────────
+
+# Excel, LibreOffice and Sheets treat a cell starting with any of these as a
+# formula, so a lap note reading =cmd|'/c calc'!A1 executes when whoever runs
+# the instance opens the export. Any member can plant one.
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+def _csv_safe(value):
+    """Render a cell so a spreadsheet always treats it as text."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(_CSV_INJECTION_PREFIXES):
+        # A leading apostrophe is the standard escape and is not displayed.
+        return "'" + text
+    return text
 
 @app.route("/api/export/csv", methods=["GET"])
 @token_required
 def export_csv():
     db = get_db()
+    scope_sql, scope_params = _visibility_clause("l.user_id")
     rows = db.execute(
-        """SELECT u.display_name as driver, l.track, l.car, l.laptime_ms, l.weather, l.notes, l.recorded_at
-           FROM laptimes l JOIN users u ON l.user_id = u.id
-           ORDER BY l.recorded_at DESC"""
+        f"""SELECT u.display_name as driver, l.track, l.car, l.laptime_ms,
+                   l.weather, l.notes, l.recorded_at
+            FROM laptimes l JOIN users u ON l.user_id = u.id
+            WHERE 1=1{scope_sql}
+            ORDER BY l.recorded_at DESC""",
+        scope_params,
     ).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -1146,7 +1724,11 @@ def export_csv():
         seconds = (ms % 60000) // 1000
         millis = ms % 1000
         formatted = f"{minutes}:{seconds:02d}.{millis:03d}"
-        writer.writerow([r["driver"], r["track"], r["car"], ms, formatted, r["weather"], r["notes"], r["recorded_at"]])
+        writer.writerow([
+            _csv_safe(r["driver"]), _csv_safe(r["track"]), _csv_safe(r["car"]),
+            ms, formatted, _csv_safe(r["weather"]), _csv_safe(r["notes"]),
+            _csv_safe(r["recorded_at"]),
+        ])
     return Response(
         output.getvalue(),
         mimetype="text/csv",
@@ -1157,10 +1739,14 @@ def export_csv():
 @token_required
 def export_json():
     db = get_db()
+    scope_sql, scope_params = _visibility_clause("l.user_id")
     rows = db.execute(
-        """SELECT u.display_name as driver, l.track, l.car, l.laptime_ms, l.weather, l.notes, l.recorded_at
-           FROM laptimes l JOIN users u ON l.user_id = u.id
-           ORDER BY l.recorded_at DESC"""
+        f"""SELECT u.display_name as driver, l.track, l.car, l.laptime_ms,
+                   l.weather, l.notes, l.recorded_at
+            FROM laptimes l JOIN users u ON l.user_id = u.id
+            WHERE 1=1{scope_sql}
+            ORDER BY l.recorded_at DESC""",
+        scope_params,
     ).fetchall()
     return Response(
         json.dumps([dict(r) for r in rows], indent=2),
@@ -1175,4 +1761,12 @@ def health():
     return jsonify({"status": "ok"})
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    # Loopback only. debug=True serves the Werkzeug console and source-bearing
+    # tracebacks, and binding 0.0.0.0 offered both to everything on the
+    # network. Set DEV_HOST deliberately if you really need to reach the dev
+    # server from another machine — and turn the debugger off if you do.
+    app.run(
+        debug=os.environ.get("FLASK_DEBUG", "1") == "1",
+        host=os.environ.get("DEV_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PORT", "5000")),
+    )

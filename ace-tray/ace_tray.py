@@ -12,6 +12,7 @@ import socket
 import platform
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import Optional
@@ -35,7 +36,7 @@ import requests
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 ORG_NAME = "ACELaps"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
@@ -72,6 +73,24 @@ class LapRecord:
 
 
 # ─── API Client ──────────────────────────────────────────────────────
+
+def _is_plaintext_remote(url: str) -> bool:
+    """
+    True when the URL is unencrypted and points somewhere other than this
+    machine. The API key travels on every upload, so it is worth saying so
+    once — but not for a loopback address, where there is no network to
+    listen on.
+    """
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    if parsed.scheme == "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    return host not in ("localhost", "127.0.0.1", "::1", "")
+
+
+class ClientIdConflict(Exception):
+    """The server has this client_id registered to a different account."""
+
 
 class APIClient:
     """
@@ -191,6 +210,11 @@ class APIClient:
             "app_version": APP_VERSION,
         }
         resp = requests.post(url, json=payload, headers=self._headers(), timeout=5)
+        if resp.status_code == 409:
+            # The server keeps a client_id to one account. Ours collides with
+            # another user's — on a shared machine, or after a registry copy —
+            # so the caller needs to mint a fresh one.
+            raise ClientIdConflict()
         return resp.status_code == 200
 
     def send_disconnect(self, client_id: str) -> bool:
@@ -1301,6 +1325,7 @@ class MainWindow(QMainWindow):
         if not url:
             self._set_status("Enter the server URL")
             return
+        insecure = _is_plaintext_remote(url)
         if use_password:
             if not username or not password:
                 self._set_status("Enter your username and password")
@@ -1331,6 +1356,12 @@ class MainWindow(QMainWindow):
             if use_password:
                 self.pwd_toggle.setChecked(False)
 
+            if insecure:
+                self._log(
+                    "Note: this server uses plain HTTP, so your API key is sent "
+                    "unencrypted. Fine on your own network - see docs/TLS.md before "
+                    "using it across the internet."
+                )
             self.connection_status.setText(f"Connected as {display_name}")
             self.connection_status.setStyleSheet("color: #2ec866; font-size: 12px; font-weight: 600;")
             self.tray_status.setText(f"Connected: {display_name}")
@@ -1389,6 +1420,11 @@ class MainWindow(QMainWindow):
             return
         try:
             self.api.send_heartbeat(self.client_id)
+        except ClientIdConflict:
+            # Take a new identity and let the next tick register it.
+            self.client_id = str(uuid.uuid4())
+            self.settings.setValue("client_id", self.client_id)
+            self._log("This client ID was already registered to another account - issued a new one")
         except Exception:
             # Heartbeat failures are expected when the network/server is
             # unreachable; the admin view will surface that as "Lost".

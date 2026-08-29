@@ -54,7 +54,14 @@ cd ace-laptimes/backend
 python -m venv .venv
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
-python app.py  # runs on http://localhost:5000
+# The dev server needs a signing key, same as production:
+export SECRET_KEY=$(openssl rand -hex 32)
+python app.py  # runs on http://127.0.0.1:5000
+
+# It binds loopback on purpose: debug mode exposes the Werkzeug console and
+# full tracebacks, which should never be reachable from your network. To
+# check the container behaviour instead, run it the way production does:
+#   gunicorn --bind 127.0.0.1:5000 --workers 2 app:app
 
 # Frontend
 cd ../frontend

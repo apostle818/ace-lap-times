@@ -1,6 +1,88 @@
 # Upgrading
 
-This release changes how the tray app authenticates: lap upload now uses a
+## Security release — read this first
+
+This release fixes a set of security findings. Most of it is invisible, but
+four changes need something from you.
+
+### 1. SECRET_KEY is now required
+
+The backend used to fall back to a default signing key when `SECRET_KEY` was
+unset. That default is published in this repository, so any instance running
+without a `.env` file could be signed into as any user, superadmin included,
+by anyone who could reach the port — no password needed.
+
+There is no fallback any more. **The stack will not start without a key.**
+If you do not already have a `.env` file next to your `docker-compose.yml`:
+
+```bash
+echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
+docker compose up -d
+```
+
+If you *did* have one, you are fine — but if you have ever run this stack
+without it, treat every account as compromised: rotate `SECRET_KEY`, then
+have everyone change their password and revoke their API keys.
+
+### 2. Everyone has to sign in again
+
+Sessions now carry a version that lets them be revoked, and tokens issued by
+the old server do not have one. Everyone is signed out once, on the web UI.
+
+Tray apps are unaffected — they authenticate with API keys, which keep
+working.
+
+### 3. Groups are now a privacy boundary
+
+You now see your own laps plus the laps of people you share a group with, and
+nothing else. Previously every driver could see every lap on the instance.
+
+**If your leaderboard suddenly looks empty, this is why.** Drivers who are not
+in any group now see only themselves. Put everyone who should share a
+leaderboard into a group:
+
+*Groups → pick a group → Add Member*, or send them an invite link.
+
+Superadmins still see everything.
+
+### 4. Passwords must be at least 12 characters
+
+This applies to new registrations only. Existing accounts keep working with
+their current password, so nobody is locked out — but short passwords are
+exactly what the new rate limiting is there to protect, and changing them is
+worth doing.
+
+### Nothing to do, but worth knowing
+
+- **The database migrates itself** on first start. New columns are added to
+  `users` and `group_invites`; no data is touched.
+- **The backend container now runs as a non-root user.** It takes ownership of
+  the data volume on first start, so an existing deployment needs no manual
+  step.
+- **Invite links now expire** after 7 days by default and can be given a use
+  limit and revoked. Links created before this release keep working — they
+  simply have no limits recorded — and now appear in the group's invite list
+  where you can revoke them.
+- **Login and registration are rate limited.** Five failed logins per minute
+  per account, five registrations per hour per address.
+- **If you run another proxy in front of nginx** (Caddy, Traefik, Cloudflare),
+  set `TRUSTED_PROXY_HOPS` on the backend to the number of proxies. The
+  default of 1 matches the stack as shipped. Getting it wrong makes rate
+  limits and the Connected Clients panel see the proxy instead of the client.
+  See [TLS.md](TLS.md).
+
+### Rolling back
+
+The schema changes are additive, so the previous image still runs against the
+upgraded database. Pin the old tag in `docker-compose.yml` and
+`docker compose up -d`. You would be reinstating the findings above, so treat
+it as temporary.
+
+---
+
+# Earlier release — API key authentication
+
+This release changed how the tray app authenticates: lap upload now uses a
 revocable **API key** instead of a stored login token. Both the server and the
 tray app need updating, and **the order matters**.
 

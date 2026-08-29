@@ -10,7 +10,8 @@ Built for sim racers who want to own their data without relying on third-party s
 - **Race + Practice support** — captures laps from both game modes with sector breakdowns
 - **User accounts** — password auth with JWT tokens, multiple drivers on one server
 - **API keys** — the tray app uploads with a revocable, upload-only key instead of your password
-- **Leaderboard** — compare best times across drivers, filtered by track and car
+- **Groups** — a privacy boundary, not just a label: you see your own laps and those of drivers you share a group with, nobody else's
+- **Leaderboard** — compare best times across drivers in your groups, filtered by track and car
 - **Personal bests** — track your fastest time per track/car combo
 - **Progress charts** — visualize improvement over time for a specific track and car
 - **Export** — download all data as CSV or JSON
@@ -57,11 +58,14 @@ is **not supported** — see [docs/BUILDS.md](docs/BUILDS.md).
 
 1. Download [`ace-laptimes/docker-compose.yml`](ace-laptimes/docker-compose.yml)
 
-2. Create a `.env` file next to it:
-   ```env
-   SECRET_KEY=your-random-secret-here
+2. Create a `.env` file next to it, with a secret you generate yourself:
+   ```bash
+   echo "SECRET_KEY=$(openssl rand -hex 32)" > .env
    ```
-   Generate one: `openssl rand -hex 32`
+   This key signs every login session. There is no default and no fallback —
+   the stack refuses to start without it, on purpose. Anyone who knows your
+   key can sign in as any user, including the superadmin, so treat it like a
+   password and never commit it.
 
 3. Start the stack:
    ```bash
@@ -71,6 +75,12 @@ is **not supported** — see [docs/BUILDS.md](docs/BUILDS.md).
 4. Open `http://your-server-ip:8099` and create your account
 
 The first registered user automatically becomes superadmin.
+
+> **Keep port 8099 off the internet.** The stack speaks plain HTTP, so
+> passwords, session tokens and API keys cross the network unencrypted. That
+> is fine on a home LAN and not fine when port-forwarded. To reach it from
+> outside, use a VPN or put a TLS reverse proxy in front — see
+> [docs/TLS.md](docs/TLS.md).
 
 ### Tray app (Windows)
 
@@ -129,21 +139,22 @@ All endpoints except auth and health require `Authorization: Bearer <token>`.
 | POST | `/api/auth/register` | Create account |
 | POST | `/api/auth/login` | Sign in |
 | GET | `/api/auth/me` | Current user |
-| GET | `/api/laptimes` | List laps (filterable) |
+| GET | `/api/laptimes` | List laps you can see (filterable) |
 | POST | `/api/laptimes` | Record a lap |
 | PUT | `/api/laptimes/:id` | Update a lap |
 | DELETE | `/api/laptimes/:id` | Delete a lap |
-| GET | `/api/leaderboard` | Best times per driver/track/car |
+| GET | `/api/leaderboard` | Best times per driver/track/car, within your groups |
 | GET | `/api/personal-bests` | PBs per track/car combo |
 | GET | `/api/progress` | Time series for charts |
 | GET | `/api/meta/tracks` | All track names |
 | GET | `/api/meta/cars` | All car names |
-| GET | `/api/meta/users` | All users |
+| GET | `/api/meta/users` | Driver directory |
 | GET | `/api/export/csv` | Download CSV |
 | GET | `/api/export/json` | Download JSON |
 | GET | `/api/keys` | List your API keys |
 | POST | `/api/keys` | Create an API key (returned once) |
 | DELETE | `/api/keys/:id` | Revoke an API key |
+| DELETE | `/api/auth/sessions` | Sign out everywhere |
 | GET | `/api/health` | Health check |
 
 ### Authentication
@@ -162,6 +173,24 @@ ever record laps for its own owner.
 
 Keys are stored as a SHA-256 hash; the plaintext is shown once at creation and is
 unrecoverable afterwards. Revoking a key does not affect your password or web login.
+
+### Who can see what
+
+Groups decide visibility. A driver sees their own laps plus the laps of
+everyone they share at least one group with — on the leaderboard, in history,
+in progress charts, in the track and car lists, and in exports. Laps recorded
+by someone with no group in common are not visible and cannot be reached by
+passing their `user_id` to the API.
+
+| | Sees |
+|---|---|
+| Superadmin | Everything on the instance |
+| Group admin | Their own laps and their groups' members' laps; the full driver directory, so they can add members |
+| Member | Their own laps and their groups' members' laps; only co-members in the directory |
+| Member with no group | Only their own laps |
+
+A driver with no group sees only themselves, so put everyone in a group if
+you want a shared leaderboard.
 
 ## Tech stack
 

@@ -1,0 +1,16 @@
+# Docker reads this, not .gitignore, and the build context is this directory.
+# Without it a maintainer who has run the backend locally bakes their
+# ./data/laptimes.db - every password and API key hash - into a published
+# image layer.
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.md

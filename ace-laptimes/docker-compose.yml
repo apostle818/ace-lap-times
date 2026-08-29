@@ -17,7 +17,7 @@ services:
     volumes:
       - db-data:/app/data
     environment:
-      - SECRET_KEY=${SECRET_KEY:-change-me-to-a-random-string}
+      - "SECRET_KEY=${SECRET_KEY:?required - create a .env file next to this compose file containing SECRET_KEY=<value>, generated with openssl rand -hex 32}"
       - DATABASE_PATH=/app/data/laptimes.db
     expose:
       - "5000"
