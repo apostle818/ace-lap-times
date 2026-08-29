@@ -1,0 +1,2 @@
+# Docker reads this, not .gitignore, and the build context is this directory.
+*.md
