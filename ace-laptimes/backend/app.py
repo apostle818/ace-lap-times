@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 from flask import Flask, request, jsonify, g, Response
+from werkzeug.middleware.proxy_fix import ProxyFix
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import bcrypt
 import jwt
 
@@ -58,6 +61,57 @@ def _load_secret_key():
 
 app.config["SECRET_KEY"] = _load_secret_key()
 DATABASE_PATH = os.environ.get("DATABASE_PATH", "./data/laptimes.db")
+
+# ─── Client addresses behind the proxy ───────────────────────────────
+#
+# In the shipped stack nginx is the only hop, so exactly one entry of
+# X-Forwarded-For is ours and the rest is whatever the client sent. ProxyFix
+# takes the correct one and puts it in request.remote_addr; nothing else in
+# the app reads the header directly.
+#
+# This has to be right for rate limiting to work at all: without it every
+# request appears to come from the nginx container and all users share a
+# single bucket. Set TRUSTED_PROXY_HOPS to 0 when the backend is exposed
+# directly (then no forwarding header is trusted), or higher when you run
+# additional proxies in front of nginx.
+
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
+if TRUSTED_PROXY_HOPS > 0:
+    app.wsgi_app = ProxyFix(
+        app.wsgi_app, x_for=TRUSTED_PROXY_HOPS, x_proto=TRUSTED_PROXY_HOPS,
+        x_host=0, x_prefix=0,
+    )
+
+# ─── Rate limiting ───────────────────────────────────────────────────
+#
+# Credential endpoints get strict per-IP limits; everything else gets a
+# generous default that only catches runaway clients and scripted abuse.
+#
+# Storage is in-process, so with the default two gunicorn workers the real
+# ceiling is roughly double the configured number. That is accurate enough
+# to stop brute force and avoids making Redis a requirement for a homelab
+# deployment. Set RATELIMIT_STORAGE_URI to a shared backend if you scale out.
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["600 per hour"],
+    storage_uri=os.environ.get("RATELIMIT_STORAGE_URI", "memory://"),
+    strategy="fixed-window",
+    headers_enabled=True,
+)
+
+def _rate_limit_key_username():
+    """Limit by the username being attempted, so one account cannot be
+    ground down from many source addresses."""
+    data = request.get_json(silent=True) or {}
+    return (data.get("username") or "").strip().lower() or get_remote_address()
+
+@app.errorhandler(429)
+def _ratelimited(e):
+    return jsonify({
+        "error": "Too many attempts. Wait a minute and try again."
+    }), 429
 
 # ─── Database ────────────────────────────────────────────────────────
 
@@ -358,9 +412,53 @@ def superadmin_required(f):
         return f(*args, **kwargs)
     return decorated
 
+# ─── Passwords ───────────────────────────────────────────────────────
+
+MIN_PASSWORD_LENGTH = 12
+# bcrypt refuses anything longer outright rather than truncating, so reject
+# it here with a clear message instead of raising deep in the hash call.
+MAX_PASSWORD_BYTES = 72
+
+# A handful of passwords that show up at the top of every breach corpus.
+# Not a substitute for a real list, but it catches the worst choices.
+_COMMON_PASSWORDS = {
+    "password", "password1", "password123", "passw0rd", "123456", "1234567",
+    "12345678", "123456789", "1234567890", "qwerty", "qwerty123", "iloveyou",
+    "admin", "administrator", "welcome", "welcome1", "letmein", "monkey",
+    "abc123", "football", "baseball", "dragon", "sunshine", "princess",
+    "changeme", "secret", "trustno1", "assettocorsa", "acelaptracker",
+}
+
+def validate_password(password):
+    """Return an error string, or None when the password is acceptable."""
+    if len(password.encode()) > MAX_PASSWORD_BYTES:
+        return f"Password must be at most {MAX_PASSWORD_BYTES} bytes"
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Password must be at least {MIN_PASSWORD_LENGTH} characters"
+    if password.lower() in _COMMON_PASSWORDS:
+        return "That password is too common - pick something else"
+    return None
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def check_password(password, password_hash):
+    """Verify a password, returning False rather than raising on bad input."""
+    try:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    except (ValueError, TypeError):
+        return False
+
+# Verified against when the username does not exist, so that a login attempt
+# on an unknown account costs the same as one on a real account. Without it
+# the miss returns in ~2 ms and the hit in ~280 ms, which is a clean oracle
+# for deciding whether a username is registered.
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-timing", bcrypt.gensalt()).decode()
+
 # ─── Auth routes ─────────────────────────────────────────────────────
 
 @app.route("/api/auth/register", methods=["POST"])
+@limiter.limit("5 per hour; 20 per day")
 def register():
     data = request.get_json()
     username = data.get("username", "").strip().lower()
@@ -369,10 +467,11 @@ def register():
 
     if not username or not password or not display_name:
         return jsonify({"error": "All fields required"}), 400
-    if len(password) < 4:
-        return jsonify({"error": "Password must be at least 4 characters"}), 400
+    err = validate_password(password)
+    if err:
+        return jsonify({"error": err}), 400
 
-    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    password_hash = hash_password(password)
     db = get_db()
 
     count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -394,6 +493,8 @@ def register():
         return jsonify({"error": "Username already taken"}), 409
 
 @app.route("/api/auth/login", methods=["POST"])
+@limiter.limit("10 per minute; 50 per hour")
+@limiter.limit("5 per minute; 20 per hour", key_func=_rate_limit_key_username)
 def login():
     data = request.get_json()
     username = data.get("username", "").strip().lower()
@@ -401,7 +502,11 @@ def login():
 
     db = get_db()
     user = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+    # Hash unconditionally, against a dummy when the username is unknown, so
+    # both outcomes take the same time and neither confirms the account exists.
+    expected_hash = user["password_hash"] if user else _DUMMY_PASSWORD_HASH
+    password_ok = check_password(password, expected_hash)
+    if not user or not password_ok:
         return jsonify({"error": "Invalid credentials"}), 401
 
     groups = db.execute("""
@@ -481,6 +586,7 @@ def list_api_keys():
     return jsonify([_key_row_to_json(r) for r in rows])
 
 @app.route("/api/keys", methods=["POST"])
+@limiter.limit("10 per hour")
 @token_required
 def create_api_key():
     data = request.get_json(silent=True) or {}
@@ -639,9 +745,9 @@ def admin_delete_user(user_id):
 # ─── Client session tracking ─────────────────────────────────────────
 
 def _client_ip():
-    fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    # ProxyFix has already resolved this from X-Forwarded-For using the
+    # trusted hop count; reading the raw header here would let any client
+    # name its own address.
     return request.remote_addr or ""
 
 @app.route("/api/client/heartbeat", methods=["POST"])
@@ -931,6 +1037,7 @@ def create_invite(group_id):
     return jsonify({"token": token}), 201
 
 @app.route("/api/invites/<token>", methods=["GET"])
+@limiter.limit("30 per hour")
 def get_invite(token):
     db = get_db()
     invite = db.execute("""
@@ -949,6 +1056,7 @@ def get_invite(token):
     })
 
 @app.route("/api/invites/<token>/join", methods=["POST"])
+@limiter.limit("20 per hour")
 @token_required
 def join_via_invite(token):
     db = get_db()
