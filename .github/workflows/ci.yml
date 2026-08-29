@@ -29,7 +29,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install tools
-        run: pip install ruff==0.8.4 pyyaml==6.0.2
+        run: pip install ruff==0.8.4 pyyaml==6.0.2 pip-audit==2.10.1
 
       - name: Compile check
         run: |
@@ -43,6 +43,14 @@ jobs:
             --select E9,F63,F7,F82,F401,F811,F841 \
             --ignore E402 \
             ace-laptimes/backend ace-tray
+
+      # Dependabot opens PRs for new versions; this fails the build when a
+      # pin we already have is a known vulnerability, so it cannot sit
+      # unnoticed between those PRs.
+      - name: Audit dependencies
+        run: |
+          pip-audit --strict --requirement ace-laptimes/backend/requirements.txt
+          pip-audit --strict --requirement ace-tray/requirements.txt
 
       - name: Validate workflow YAML
         run: |

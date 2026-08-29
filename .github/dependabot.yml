@@ -1,0 +1,51 @@
+version: 2
+
+updates:
+  # Backend dependencies are pinned exactly, which makes builds reproducible
+  # but means a pin sits on a known CVE until someone notices. These PRs are
+  # the "someone".
+  - package-ecosystem: pip
+    directory: /ace-laptimes/backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(backend)"
+
+  - package-ecosystem: pip
+    directory: /ace-tray
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(tray)"
+
+  # Actions are pinned to major tags, so this catches a v4 -> v5 move that
+  # would otherwise go unnoticed until something breaks.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(actions)"
+
+  - package-ecosystem: docker
+    directory: /ace-laptimes/backend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: docker
+    directory: /ace-laptimes/frontend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"
+
+  - package-ecosystem: docker
+    directory: /ace-laptimes/nginx
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"
