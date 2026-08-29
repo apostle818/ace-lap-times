@@ -914,6 +914,22 @@ function bindPageEvents() {
   document.getElementById('export-json')?.addEventListener('click', () => window.open(`${API}/export/json`,'_blank'));
   if (state.page === 'progress' && state.progress.length > 0) renderProgressChart();
 
+  document.getElementById('revoke-sessions-btn')?.addEventListener('click', async () => {
+    const msgDiv = document.getElementById('profile-msg');
+    if (!confirm('Sign out every other browser and device using your account? You will stay signed in here.')) return;
+    const res = await apiFetch('/auth/sessions', { method: 'DELETE' });
+    if (!res) return;
+    const data = await res.json();
+    if (res.ok) {
+      // The old token is dead now; adopt the replacement so this tab survives.
+      state.token = data.token;
+      localStorage.setItem('ace_token', data.token);
+      msgDiv.innerHTML = '<div class="success-msg">Signed out everywhere else</div>';
+    } else {
+      msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`;
+    }
+  });
+
   // Profile
   document.getElementById('profile-save-btn')?.addEventListener('click', async () => {
     const display_name = document.getElementById('prof-display').value.trim();
@@ -1419,7 +1435,9 @@ function renderProfilePage() {
           <input type="text" id="prof-bio" value="${escapeHtml(bio)}" placeholder="e.g. Weekend racer, Monza specialist">
         </div>
       </div>
-      <div style="margin-top:20px;display:flex;justify-content:flex-end;">
+      <div style="margin-top:20px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+        <button class="btn btn-secondary btn-sm" id="revoke-sessions-btn"
+                title="Signs out every other browser and device using your account">Sign out everywhere</button>
         <button class="btn btn-primary" id="profile-save-btn">Save Changes</button>
       </div>
     </div>

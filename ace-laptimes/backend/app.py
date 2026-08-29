@@ -141,6 +141,7 @@ def init_db():
             display_name TEXT NOT NULL,
             bio TEXT DEFAULT '',
             role TEXT NOT NULL DEFAULT 'member',
+            token_version INTEGER NOT NULL DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE TABLE IF NOT EXISTS groups (
@@ -222,6 +223,9 @@ def init_db():
         db.commit()
     if 'bio' not in user_cols:
         db.execute("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''")
+        db.commit()
+    if 'token_version' not in user_cols:
+        db.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
         db.commit()
     group_cols = [r[1] for r in db.execute("PRAGMA table_info(groups)").fetchall()]
     if 'description' not in group_cols:
@@ -331,12 +335,22 @@ def _authenticate_api_key(presented):
 
 # ─── Auth helpers ────────────────────────────────────────────────────
 
-def create_token(user_id, username, role):
+# A token identifies who is asking; it never says what they are allowed to
+# do. Role, and the account's continued existence, are read from the database
+# on every request — a token that carried its own role stayed superadmin for
+# its full lifetime after the account was demoted, and kept working after the
+# account was deleted outright.
+TOKEN_TTL = timedelta(days=int(os.environ.get("SESSION_DAYS", "7")))
+
+def create_token(user_id, username, token_version):
     payload = {
         "user_id": user_id,
         "username": username,
-        "role": role,
-        "exp": datetime.utcnow() + timedelta(days=30),
+        # Bumped in the users row whenever sessions must be cut off; a token
+        # carrying a stale value is refused. This is what makes a demotion,
+        # a deletion or a forced sign-out take effect immediately.
+        "tv": token_version,
+        "exp": datetime.utcnow() + TOKEN_TTL,
     }
     return jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
 
@@ -347,14 +361,24 @@ def _parse_token():
     token = auth_header[7:]
     try:
         data = jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])
-        g.current_user_id = data["user_id"]
-        g.current_username = data["username"]
-        g.current_user_role = data.get("role", "member")
-        return None
     except jwt.ExpiredSignatureError:
         return jsonify({"error": "Token expired"}), 401
     except jwt.InvalidTokenError:
         return jsonify({"error": "Invalid token"}), 401
+
+    user = get_db().execute(
+        "SELECT id, username, role, token_version FROM users WHERE id = ?",
+        (data.get("user_id"),),
+    ).fetchone()
+    if not user:
+        return jsonify({"error": "Session no longer valid"}), 401
+    if data.get("tv") != user["token_version"]:
+        return jsonify({"error": "Session expired - please sign in again"}), 401
+
+    g.current_user_id = user["id"]
+    g.current_username = user["username"]
+    g.current_user_role = user["role"]
+    return None
 
 def token_required(f):
     """
@@ -484,7 +508,7 @@ def register():
         )
         db.commit()
         user_id = cursor.lastrowid
-        token = create_token(user_id, username, role)
+        token = create_token(user_id, username, 0)
         return jsonify({
             "token": token,
             "user": {"id": user_id, "username": username, "display_name": display_name, "role": role, "groups": []}
@@ -515,7 +539,7 @@ def login():
         WHERE gm.user_id = ?
     """, (user["id"],)).fetchall()
 
-    token = create_token(user["id"], user["username"], user["role"])
+    token = create_token(user["id"], user["username"], user["token_version"])
     return jsonify({
         "token": token,
         "user": {
@@ -558,6 +582,29 @@ def update_profile():
                (display_name, bio, g.current_user_id))
     db.commit()
     return jsonify({"message": "Profile updated"})
+
+@app.route("/api/auth/sessions", methods=["DELETE"])
+@token_required
+def revoke_sessions():
+    """
+    Sign out everywhere. Invalidates every token issued to this account —
+    including any copied out of another browser — and returns a fresh one so
+    the caller stays signed in here.
+    """
+    db = get_db()
+    db.execute(
+        "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
+        (g.current_user_id,),
+    )
+    db.commit()
+    user = db.execute(
+        "SELECT id, username, token_version FROM users WHERE id = ?",
+        (g.current_user_id,),
+    ).fetchone()
+    return jsonify({
+        "message": "All other sessions signed out",
+        "token": create_token(user["id"], user["username"], user["token_version"]),
+    })
 
 # ─── API key management ──────────────────────────────────────────────
 
@@ -726,7 +773,13 @@ def admin_update_user(user_id):
     if role not in ("member", "superadmin"):
         return jsonify({"error": "Invalid role"}), 400
     db = get_db()
-    db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+    # Bumping token_version cuts off sessions issued under the old role, so a
+    # demotion takes effect now rather than whenever the token happens to
+    # expire. The user signs in again and gets the role they actually have.
+    db.execute(
+        "UPDATE users SET role = ?, token_version = token_version + 1 WHERE id = ?",
+        (role, user_id),
+    )
     db.commit()
     return jsonify({"message": "Updated"})
 
