@@ -100,9 +100,30 @@ untouched, and no configuration or environment variables change.
 | Server | Tray app | Works? |
 |---|---|---|
 | New | New | Yes — the intended combination |
-| New | Old | Yes — old tray keeps using its saved login token until you update it |
+| New | Old | Yes, **after one manual reconnect** — see the warning below |
 | Old | New | **No** — tray shows *"Server too old — it has no API key support yet"* |
 | Old | Old | Yes — unchanged, but you get none of the security benefit |
+
+> ### Everyone must sign in again after the server upgrade
+>
+> This is not caused by the API key change. Sessions now carry a
+> `token_version` that is checked against the database on every request, and
+> tokens issued before the upgrade do not have one, so they are refused.
+> That is the point of the change — it is what makes a demotion, a deletion
+> or a forced sign-out take effect immediately instead of up to 30 days later.
+>
+> Practically:
+>
+> - **Web UI** — you are bounced to the login screen. Sign in again.
+> - **Tray app, old version (≤ 1.1.1)** — laps stop uploading. Open
+>   **Settings**, re-enter your username and password, click **Connect**.
+>   It then works normally on the old version for as long as you like.
+> - **Tray app, new version (1.2.0+)** — it swaps the old token for an API
+>   key on first launch, so it recovers on its own. If the saved token was
+>   already expired, reconnect once as above.
+>
+> No data is affected. Lap times, users and groups are untouched, and your
+> existing password still works.
 
 ---
 
@@ -176,8 +197,9 @@ Upgraded saved login to an API key - your password is no longer needed
 
 From then on it uploads with the key. Your password is never written to disk.
 
-**If the automatic upgrade fails** — most often because the saved token has
-already expired (they last 30 days) — the log shows:
+**If the automatic upgrade fails** — because the saved token expired, or
+because it predates the server's session-versioning change and was refused —
+the log shows:
 
 ```
 Could not upgrade saved login to an API key: ...
