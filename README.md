@@ -11,6 +11,7 @@ Built for sim racers who want to own their data without relying on third-party s
 - **User accounts** — password auth with JWT tokens, multiple drivers on one server
 - **API keys** — the tray app uploads with a revocable, upload-only key instead of your password
 - **Groups** — a privacy boundary, not just a label: you see your own laps and those of drivers you share a group with, nobody else's
+- **Driver switching** — share a rig: pick who is in the seat from the tray, or move a mis-filed lap to the right driver on the website
 - **Leaderboard** — compare best times across drivers in your groups, filtered by track and car
 - **Personal bests** — track your fastest time per track/car combo
 - **Progress charts** — visualize improvement over time for a specific track and car
@@ -141,7 +142,7 @@ All endpoints except auth and health require `Authorization: Bearer <token>`.
 | GET | `/api/auth/me` | Current user |
 | GET | `/api/laptimes` | List laps you can see (filterable) |
 | POST | `/api/laptimes` | Record a lap |
-| PUT | `/api/laptimes/:id` | Update a lap |
+| PUT | `/api/laptimes/:id` | Update a lap, or move it to another driver |
 | DELETE | `/api/laptimes/:id` | Delete a lap |
 | GET | `/api/leaderboard` | Best times per driver/track/car, within your groups |
 | GET | `/api/personal-bests` | PBs per track/car combo |
@@ -149,6 +150,7 @@ All endpoints except auth and health require `Authorization: Bearer <token>`.
 | GET | `/api/meta/tracks` | All track names |
 | GET | `/api/meta/cars` | All car names |
 | GET | `/api/meta/users` | Driver directory |
+| GET | `/api/meta/assignable-users` | Drivers you may file a lap under |
 | GET | `/api/export/csv` | Download CSV |
 | GET | `/api/export/json` | Download JSON |
 | GET | `/api/keys` | List your API keys |
@@ -164,12 +166,13 @@ Two credentials types, deliberately not interchangeable:
 - **JWT** (`Authorization: Bearer <token>`) — issued by `/api/auth/login`, used by the web UI. Full access for the account's role.
 - **API key** (`X-API-Key: alt_...`) — used by the tray app. Accepted on **only** these endpoints:
   `GET /api/auth/me`, `GET|POST /api/laptimes`, `GET /api/meta/tracks`, `GET /api/meta/cars`,
-  `POST /api/client/heartbeat`, `POST /api/client/disconnect`.
+  `GET /api/meta/assignable-users`, `POST /api/client/heartbeat`, `POST /api/client/disconnect`.
 
-Everything else — admin routes, profile changes, exports, lap deletion, key management —
-rejects API keys with `403`, so a new endpoint is closed to keys unless explicitly opened.
-A key also carries no role (even a superadmin's key acts as a plain member) and can only
-ever record laps for its own owner.
+Everything else — admin routes, profile changes, exports, lap deletion, lap editing, key
+management — rejects API keys with `403`, so a new endpoint is closed to keys unless
+explicitly opened. A key also carries no role: even a superadmin's key acts as a plain
+member, so it can never reach an admin route or record for anyone outside its owner's
+groups.
 
 Keys are stored as a SHA-256 hash; the plaintext is shown once at creation and is
 unrecoverable afterwards. Revoking a key does not affect your password or web login.
@@ -191,6 +194,27 @@ passing their `user_id` to the API.
 
 A driver with no group sees only themselves, so put everyone in a group if
 you want a shared leaderboard.
+
+### Who a lap can be filed under
+
+Reading a lap and writing one in someone else's name are separate questions.
+Sharing a group lets you *see* a driver's laps; it does not let you *file*
+laps as them.
+
+| | May record for, edit, move or delete the laps of |
+|---|---|
+| Superadmin | Anyone on the instance |
+| Group admin | Themselves and every member of the groups they administer |
+| Member | Only themselves |
+
+This is what both driver pickers are built on — *Record For* and the driver
+column on Lap History in the web UI, and *Driving as* in the tray app. A plain
+member sees no picker at all, because there is nobody else they could pick.
+
+An API key follows the same rule minus the superadmin row: a superadmin's tray
+key can file for the members of the groups that account group-admins, and no
+further. Whichever driver a lap ends up filed under, it is theirs — it counts
+towards their leaderboard entry and personal bests, not the uploader's.
 
 ## Tech stack
 
@@ -218,6 +242,7 @@ you want a shared leaderboard.
 - [x] API key auth for the tray app
 - [x] Multi-arch image builds via GitHub Actions (amd64 / arm64 / armv7)
 - [x] Windows .exe built in CI
+- [x] Reassign a lap to another driver, on the web and from the tray
 - [ ] Public site with MFA & group/team setup
 - [ ] Track/car thumbnails
 - [ ] Head-to-head delta tracking

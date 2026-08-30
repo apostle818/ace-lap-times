@@ -615,6 +615,60 @@ def _is_group_admin_somewhere(db, user_id):
         (user_id,),
     ).fetchone() is not None
 
+# ─── Lap attribution ─────────────────────────────────────────────────
+#
+# Visibility above answers "whose laps may I read". This answers "whose name
+# may I write a lap under", which is a stricter question and the one that
+# gates recording for another driver, editing their lap, deleting it, and
+# moving a lap from one driver to another.
+
+def _group_admin_member_ids(db, user_id):
+    """Ids of every member of every group `user_id` is a group admin of."""
+    rows = db.execute(
+        """SELECT DISTINCT gm.user_id
+           FROM group_members ga
+           JOIN group_members gm ON ga.group_id = gm.group_id
+           WHERE ga.user_id = ? AND ga.role = 'group_admin'""",
+        (user_id,),
+    ).fetchall()
+    return {r["user_id"] for r in rows}
+
+def _acting_as_superadmin():
+    """
+    Superadmin powers apply to a signed-in session only. An API key carries
+    no role — _authenticate_api_key pins it to "member" — and this second
+    check keeps that true even if that ever changes, so a superadmin's tray
+    key reaches exactly the people that account group-admins and no further.
+    """
+    return (getattr(g, "auth_method", "jwt") == "jwt"
+            and g.current_user_role == "superadmin")
+
+def _may_act_for(db, other_user_id):
+    """
+    Whether the caller may write lap data in `other_user_id`'s name. Covers
+    attributing a new lap to them, and editing, moving or deleting a lap that
+    is already theirs — the same rule in every case: yourself always, a
+    superadmin for anyone, a group admin for the members of the groups they
+    administer, and nobody else.
+    """
+    other_user_id = int(other_user_id)
+    if other_user_id == g.current_user_id or _acting_as_superadmin():
+        return True
+    return other_user_id in _group_admin_member_ids(db, g.current_user_id)
+
+def _assignable_user_ids(db):
+    """Ids the caller may file a lap under, or None meaning everyone."""
+    if _acting_as_superadmin():
+        return None
+    ids = _group_admin_member_ids(db, g.current_user_id)
+    ids.add(g.current_user_id)  # your own laps are always yours to file
+    return ids
+
+def _user_exists(db, user_id):
+    return db.execute(
+        "SELECT 1 FROM users WHERE id = ?", (user_id,)
+    ).fetchone() is not None
+
 # ─── Auth routes ─────────────────────────────────────────────────────
 
 @app.route("/api/auth/register", methods=["POST"])
@@ -1483,22 +1537,12 @@ def create_laptime():
         target_user_id = None
 
     if target_user_id and target_user_id != g.current_user_id:
-        # API keys are self-scoped: they can never attribute a lap to
-        # another driver, whatever role the owning account holds.
-        if getattr(g, "auth_method", "jwt") == "api_key":
-            return jsonify({"error": "API keys can only record your own laps"}), 403
-        if g.current_user_role == "superadmin":
-            lap_owner_id = target_user_id
-        else:
-            shared = db.execute("""
-                SELECT 1 FROM group_members ga
-                JOIN group_members gm ON ga.group_id = gm.group_id
-                WHERE ga.user_id = ? AND ga.role = 'group_admin' AND gm.user_id = ?
-            """, (g.current_user_id, target_user_id)).fetchone()
-            if shared:
-                lap_owner_id = target_user_id
-            else:
-                return jsonify({"error": "Permission denied"}), 403
+        # One answer for "no such driver" and "not yours to record for", so
+        # this cannot be used to work out which account ids exist. An unknown
+        # id would otherwise reach the INSERT and fail the foreign key.
+        if not _user_exists(db, target_user_id) or not _may_act_for(db, target_user_id):
+            return jsonify({"error": "Permission denied"}), 403
+        lap_owner_id = target_user_id
 
     cursor = db.execute(
         """INSERT INTO laptimes (user_id, track, car, laptime_ms, weather, notes, recorded_at)
@@ -1551,16 +1595,8 @@ def delete_laptime(lap_id):
     if not lap:
         return jsonify({"error": "Lap not found"}), 404
 
-    if lap["user_id"] == g.current_user_id or g.current_user_role == "superadmin":
-        pass
-    else:
-        shared = db.execute("""
-            SELECT 1 FROM group_members ga
-            JOIN group_members gm ON ga.group_id = gm.group_id
-            WHERE ga.user_id = ? AND ga.role = 'group_admin' AND gm.user_id = ?
-        """, (g.current_user_id, lap["user_id"])).fetchone()
-        if not shared:
-            return jsonify({"error": "Lap not found or not yours"}), 404
+    if not _may_act_for(db, lap["user_id"]):
+        return jsonify({"error": "Lap not found or not yours"}), 404
 
     db.execute("DELETE FROM laptimes WHERE id = ?", (lap_id,))
     db.commit()
@@ -1570,8 +1606,12 @@ def delete_laptime(lap_id):
 @token_required
 def update_laptime(lap_id):
     db = get_db()
-    lap = db.execute("SELECT * FROM laptimes WHERE id = ? AND user_id = ?", (lap_id, g.current_user_id)).fetchone()
-    if not lap:
+    lap = db.execute("SELECT * FROM laptimes WHERE id = ?", (lap_id,)).fetchone()
+    # Editing now reaches as far as deleting already did: your own laps, plus
+    # the laps of the drivers a group admin or superadmin looks after. Without
+    # that, a lap the tray filed under the wrong driver could only be deleted
+    # and retyped, never corrected.
+    if not lap or not _may_act_for(db, lap["user_id"]):
         return jsonify({"error": "Lap not found or not yours"}), 404
 
     data = request.get_json(silent=True) or {}
@@ -1587,14 +1627,28 @@ def update_laptime(lap_id):
     )
     if err:
         return err
+
+    owner_id = lap["user_id"]
+    raw_owner = data.get("user_id")
+    if raw_owner is not None and str(raw_owner) != "":
+        new_owner, err = parse_int(raw_owner, "user_id", minimum=1)
+        if err:
+            return err
+        # Moving a lap needs rights over the driver it lands on, not only
+        # over the one it is leaving.
+        if new_owner != owner_id:
+            if not _user_exists(db, new_owner) or not _may_act_for(db, new_owner):
+                return jsonify({"error": "You cannot assign a lap to that driver"}), 403
+            owner_id = new_owner
+
     db.execute(
-        """UPDATE laptimes SET track=?, car=?, laptime_ms=?, weather=?, notes=?, recorded_at=?
+        """UPDATE laptimes SET user_id=?, track=?, car=?, laptime_ms=?, weather=?, notes=?, recorded_at=?
            WHERE id=?""",
-        (fields["track"], fields["car"], laptime_ms, fields["weather"],
+        (owner_id, fields["track"], fields["car"], laptime_ms, fields["weather"],
          fields["notes"], fields["recorded_at"], lap_id),
     )
     db.commit()
-    return jsonify({"message": "Updated"})
+    return jsonify({"message": "Updated", "user_id": owner_id})
 
 # ─── Leaderboard & PBs ──────────────────────────────────────────────
 
@@ -1704,6 +1758,34 @@ def get_users():
         ).fetchall()
     else:
         ids = sorted(_visible_user_ids(db, g.current_user_id))
+        rows = db.execute(
+            f"""SELECT id, username, display_name FROM users
+                WHERE id IN ({','.join('?' * len(ids))}) ORDER BY display_name""",
+            ids,
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route("/api/meta/assignable-users", methods=["GET"])
+@token_or_key_required
+def get_assignable_users():
+    """
+    The drivers the caller may file a lap under, which is a narrower list
+    than /api/meta/users: that one is a directory a group admin needs in
+    order to add members, this one is exactly what a "record for" or
+    "reassign to" picker may offer without the server refusing the write.
+
+    A plain member gets a single entry — themselves — which is how both UIs
+    decide whether to show a picker at all. It carries no lap data, and is
+    open to tray keys because the tray needs it to offer a driver switch.
+    """
+    db = get_db()
+    ids = _assignable_user_ids(db)
+    if ids is None:
+        rows = db.execute(
+            "SELECT id, username, display_name FROM users ORDER BY display_name"
+        ).fetchall()
+    else:
+        ids = sorted(ids)
         rows = db.execute(
             f"""SELECT id, username, display_name FROM users
                 WHERE id IN ({','.join('?' * len(ids))}) ORDER BY display_name""",

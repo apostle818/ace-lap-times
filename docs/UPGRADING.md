@@ -1,5 +1,50 @@
 # Upgrading
 
+## Driver switching — the current release
+
+Laps can now be filed under a driver other than the one who uploaded them:
+a mis-attributed lap can be moved on the website, and the tray app can be
+flipped to whoever is actually in the seat.
+
+**Nothing to do.** No schema change, no configuration, no re-login. An old
+tray app keeps working unchanged against the new server, and a new tray app
+against an old server simply shows no driver picker.
+
+### What is new
+
+- **Web UI — Lap History.** Where you may move a lap, its driver name is now
+  a dropdown. Pick another driver and the lap becomes theirs: it leaves your
+  leaderboard entry and personal bests and joins theirs.
+- **Tray app 1.4.0 — "Driving as".** Right-click the tray icon (or use the
+  picker on the Dashboard tab) to file the next laps under someone else.
+  The choice survives a restart, so check it after a break.
+
+### Who can do it
+
+Group admins, for the members of the groups they administer; superadmins, for
+anyone. **A plain member sees no picker**, in either app — nothing changes for
+them. If you want your drivers to be able to sort out each other's laps, make
+one of them a group admin: *Groups → pick a group → set their role*.
+
+### One rule did change
+
+An API key could previously only ever record laps for its own owner. A key
+whose owner is a group admin can now also record for the members of the groups
+that account administers — this is what makes the tray switch work. The key
+still carries no role, so it reaches no admin route, and a superadmin's key
+gets no instance-wide reach: it is limited to that account's groups like any
+other. A plain member's key is unchanged and still self-scoped.
+
+If you would rather nobody could do this, do not grant group admin — the
+capability follows that role and nothing else.
+
+### Rolling back
+
+Nothing to undo in the database. The previous image runs against the same
+schema; any lap already moved stays with the driver it was moved to.
+
+---
+
 ## Security release — read this first
 
 This release fixes a set of security findings. Most of it is invisible, but

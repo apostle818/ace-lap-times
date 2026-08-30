@@ -4,6 +4,9 @@ const state = {
   user: JSON.parse(localStorage.getItem('ace_user') || 'null'),
   page: 'record',
   laptimes: [], tracks: [], cars: [], users: [],
+  // The drivers this account may file a lap under - a subset of `users`,
+  // and the only names a "record for" or "reassign" picker may offer.
+  assignableUsers: [],
   leaderboard: [], personalBests: [], progress: [],
   filters: { track: '', car: '', user_id: '' },
   sidebarOpen: false,
@@ -71,6 +74,14 @@ const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'
 function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, c => HTML_ESCAPES[c]); }
 
 function userRole() { return state.user?.role || 'member'; }
+
+// A lap can be moved when the account may file laps under more than one name
+// and already has rights over the driver it currently belongs to. That mirrors
+// the server rule exactly, so the picker never offers a move it would refuse.
+function canAssignLaps() { return state.assignableUsers.length > 1; }
+function canReassignLap(lap) {
+  return canAssignLaps() && state.assignableUsers.some(u => u.id === lap.user_id);
+}
 function isGroupAdmin() { return (state.user?.groups || []).some(g => g.group_role === 'group_admin'); }
 
 function roleBadgeHtml(role) {
@@ -86,10 +97,17 @@ function clearInvite() {
 
 // ─── Data loading ───────────────────────────────────────────────────
 async function loadMeta() {
-  const [tr, cr, ur] = await Promise.all([apiFetch('/meta/tracks'), apiFetch('/meta/cars'), apiFetch('/meta/users')]);
+  const [tr, cr, ur, ar] = await Promise.all([
+    apiFetch('/meta/tracks'), apiFetch('/meta/cars'),
+    apiFetch('/meta/users'), apiFetch('/meta/assignable-users'),
+  ]);
   if (tr) state.tracks = await tr.json();
   if (cr) state.cars = await cr.json();
   if (ur) state.users = await ur.json();
+  // An older server has no such endpoint; falling back to just yourself
+  // hides the driver pickers rather than offering ones the server rejects.
+  state.assignableUsers = (ar && ar.ok) ? await ar.json()
+    : (state.user ? [{ id: state.user.id, username: state.user.username, display_name: state.user.display_name }] : []);
 }
 async function loadLaptimes() {
   const p = new URLSearchParams();
@@ -455,6 +473,37 @@ function bindPageEvents() {
       await loadLaptimes(); renderPageContent();
     });
   });
+  document.querySelectorAll('.reassign-lap').forEach(sel => {
+    sel.addEventListener('change', async () => {
+      const previous = sel.dataset.current;
+      const target = state.assignableUsers.find(u => String(u.id) === sel.value);
+      if (!target) return;
+      const from = state.assignableUsers.find(u => String(u.id) === previous);
+      if (!confirm(`Move this lap from ${from ? from.display_name : 'its current driver'} to ${target.display_name}?`)) {
+        sel.value = previous;   // the select is the control, so undo it here
+        return;
+      }
+      sel.disabled = true;
+      const res = await apiFetch(`/laptimes/${sel.dataset.id}`, {
+        method: 'PUT', body: JSON.stringify({ user_id: target.id }),
+      });
+      if (res && res.ok) {
+        await loadLaptimes();
+        renderPageContent();
+        // After the re-render, or the message would be written into a table
+        // that is about to be replaced.
+        const fresh = document.getElementById('history-msg');
+        if (fresh) fresh.innerHTML = `<div class="success-msg">Lap moved to ${escapeHtml(target.display_name)}</div>`;
+      } else {
+        const data = res ? await res.json() : {};
+        const msgDiv = document.getElementById('history-msg');
+        if (msgDiv) msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error||'Could not move that lap')}</div>`;
+        sel.value = previous;
+        sel.disabled = false;
+      }
+    });
+  });
+
   document.querySelectorAll('.filter-select').forEach(el => {
     el.addEventListener('change', () => {
       state.filters[el.dataset.filter] = el.value;
@@ -783,7 +832,7 @@ function bindPageEvents() {
 function renderRecordPage() {
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 16);
-  const canRecordForOthers = userRole() === 'superadmin' || isGroupAdmin();
+  const canRecordForOthers = canAssignLaps();
   return `
     <div class="page-header fade-in"><h2>Record a Lap</h2><p>Log your latest time on track</p></div>
     <div id="record-msg"></div>
@@ -826,7 +875,7 @@ function renderRecordPage() {
           <label>Record For</label>
           <select id="rec-user">
             <option value="${state.user?.id}">Myself — ${escapeHtml(state.user?.display_name||'')}</option>
-            ${state.users.filter(u=>u.id!==state.user?.id).map(u=>`<option value="${u.id}">${escapeHtml(u.display_name)} (@${escapeHtml(u.username)})</option>`).join('')}
+            ${state.assignableUsers.filter(u=>u.id!==state.user?.id).map(u=>`<option value="${u.id}">${escapeHtml(u.display_name)} (@${escapeHtml(u.username)})</option>`).join('')}
           </select>
         </div>` : ''}
       </div>
@@ -896,6 +945,7 @@ function renderHistoryPage() {
   const paged = state.laptimes.slice((page - 1) * pageSize, page * pageSize);
   return `
     ${renderPageHeader('Lap History', 'All recorded laps', { refresh: true })}
+    <div id="history-msg"></div>
     ${renderFilters()}
     ${total===0 ? renderEmpty('No laps recorded yet') : `
     <div class="card fade-in">
@@ -906,8 +956,16 @@ function renderHistoryPage() {
             ${paged.map(lap => {
               const idx = state.users.findIndex(u=>u.id===lap.user_id);
               const canDel = lap.user_id===state.user?.id || userRole()==='superadmin' || isGroupAdmin();
+              // Where the lap can be moved, the driver name is the control
+              // that moves it - no separate edit screen to go and find.
+              const driverCell = canReassignLap(lap)
+                ? `<span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span>
+                     <select class="inline-select reassign-lap" data-id="${lap.id}" data-current="${lap.user_id}" title="Change the driver this lap belongs to">
+                       ${state.assignableUsers.map(u=>`<option value="${u.id}" ${u.id===lap.user_id?'selected':''}>${escapeHtml(u.display_name)}</option>`).join('')}
+                     </select></span>`
+                : `<span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(lap.display_name)}</span>`;
               return `<tr>
-                <td data-label="Driver"><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(lap.display_name)}</span></td>
+                <td data-label="Driver">${driverCell}</td>
                 <td data-label="Track">${escapeHtml(lap.track)}</td>
                 <td data-label="Car">${escapeHtml(lap.car)}</td>
                 <td data-label="Time" class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
