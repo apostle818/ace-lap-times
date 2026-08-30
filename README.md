@@ -154,7 +154,7 @@ All endpoints except auth and health require `Authorization: Bearer <token>`.
 | GET | `/api/keys` | List your API keys |
 | POST | `/api/keys` | Create an API key (returned once) |
 | DELETE | `/api/keys/:id` | Revoke an API key |
-| DELETE | `/api/auth/sessions` | Sign out everywhere |
+| DELETE | `/api/auth/sessions` | Sign out everywhere; `{"revoke_api_keys": true}` also revokes your keys |
 | GET | `/api/health` | Health check |
 
 ### Authentication

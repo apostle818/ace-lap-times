@@ -507,18 +507,38 @@ function bindPageEvents() {
   if (state.page === 'progress' && state.progress.length > 0) renderProgressChart();
 
   document.getElementById('revoke-sessions-btn')?.addEventListener('click', async () => {
-    const msgDiv = document.getElementById('profile-msg');
-    if (!confirm('Sign out every other browser and device using your account? You will stay signed in here.')) return;
-    const res = await apiFetch('/auth/sessions', { method: 'DELETE' });
+    const alsoKeys = document.getElementById('revoke-keys-too')?.checked || false;
+    const activeKeys = (state.apiKeys || []).filter(k => !k.revoked_at).length;
+
+    // Spell out the API key consequence: revoking them stops every tray app
+    // uploading until each one is given a new key.
+    const warning = alsoKeys
+      ? `\n\nThis will also revoke ${activeKeys} API key${activeKeys === 1 ? '' : 's'}. `
+        + 'Any tray app using one will stop uploading laps until you give it a new key.'
+      : '';
+    if (!confirm('Sign out every other browser and device using your account? '
+                 + 'You will stay signed in here.' + warning)) return;
+
+    const res = await apiFetch('/auth/sessions', {
+      method: 'DELETE',
+      body: JSON.stringify({ revoke_api_keys: alsoKeys }),
+    });
     if (!res) return;
     const data = await res.json();
     if (res.ok) {
       // The old token is dead now; adopt the replacement so this tab survives.
       state.token = data.token;
       localStorage.setItem('ace_token', data.token);
-      msgDiv.innerHTML = '<div class="success-msg">Signed out everywhere else</div>';
+      if (data.keys_revoked) {
+        // Re-render so the API Keys table shows them as revoked.
+        await loadApiKeys();
+        renderPageContent(); bindPageEvents();
+      }
+      const msgDiv = document.getElementById('profile-msg');
+      if (msgDiv) msgDiv.innerHTML = `<div class="success-msg">${escapeHtml(data.message)}</div>`;
     } else {
-      msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`;
+      const msgDiv = document.getElementById('profile-msg');
+      if (msgDiv) msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error)}</div>`;
     }
   });
 
@@ -1065,9 +1085,15 @@ function renderProfilePage() {
           <input type="text" id="prof-bio" value="${escapeHtml(bio)}" placeholder="e.g. Weekend racer, Monza specialist">
         </div>
       </div>
-      <div style="margin-top:20px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-        <button class="btn btn-secondary btn-sm" id="revoke-sessions-btn"
-                title="Signs out every other browser and device using your account">Sign out everywhere</button>
+      <div style="margin-top:20px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <button class="btn btn-secondary btn-sm" id="revoke-sessions-btn"
+                  title="Signs out every other browser and device using your account">Sign out everywhere</button>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;">
+            <input type="checkbox" id="revoke-keys-too" style="width:auto;margin:0;cursor:pointer;">
+            Also revoke my API keys
+          </label>
+        </div>
         <button class="btn btn-primary" id="profile-save-btn">Save Changes</button>
       </div>
     </div>

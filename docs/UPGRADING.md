@@ -273,6 +273,18 @@ Worth doing once everything is working:
 Revoking a key only stops that one tray app. It never affects your password or
 your web login.
 
+### Sign out everywhere, and API keys
+
+**Sign out everywhere** on the profile page invalidates every browser session
+on your account. By default it leaves your API keys alone, so your tray apps
+keep uploading — you are usually clicking it to boot a browser session, and
+silently killing every tray upload would be a surprise.
+
+Tick **Also revoke my API keys** when the machine you are locking out is the
+one holding a key — a lost or stolen PC, for example. That revokes every key
+on your account, and each tray app needs a new key before it will upload
+again.
+
 ---
 
 ## Troubleshooting

@@ -734,19 +734,45 @@ def revoke_sessions():
     Sign out everywhere. Invalidates every token issued to this account —
     including any copied out of another browser — and returns a fresh one so
     the caller stays signed in here.
+
+    API keys are a separate credential and are NOT revoked by default:
+    bumping token_version would otherwise silently stop every tray app the
+    user runs, which is surprising when the intent was to boot a browser
+    session. Pass {"revoke_api_keys": true} to revoke them too — the right
+    choice when the machine holding the key is the one that was lost.
     """
+    data = request.get_json(silent=True) or {}
+    also_keys = bool(data.get("revoke_api_keys"))
+
     db = get_db()
     db.execute(
         "UPDATE users SET token_version = token_version + 1 WHERE id = ?",
         (g.current_user_id,),
     )
+
+    keys_revoked = 0
+    if also_keys:
+        now = datetime.utcnow().isoformat(timespec="seconds")
+        cur = db.execute(
+            "UPDATE api_keys SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
+            (now, g.current_user_id),
+        )
+        keys_revoked = cur.rowcount
     db.commit()
+
     user = db.execute(
         "SELECT id, username, token_version FROM users WHERE id = ?",
         (g.current_user_id,),
     ).fetchone()
+
+    if keys_revoked:
+        message = (f"All other sessions signed out, and {keys_revoked} API "
+                   f"key{'s' if keys_revoked != 1 else ''} revoked")
+    else:
+        message = "All other sessions signed out"
     return jsonify({
-        "message": "All other sessions signed out",
+        "message": message,
+        "keys_revoked": keys_revoked,
         "token": create_token(user["id"], user["username"], user["token_version"]),
     })
 
