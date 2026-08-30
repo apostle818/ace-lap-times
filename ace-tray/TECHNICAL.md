@@ -159,8 +159,29 @@ The tray app uses the ACE Lap Tracker REST API. The relevant endpoints it calls:
 | GET | `/api/auth/me` | To verify the token is still valid |
 | POST | `/api/laptimes` | After each detected or manually entered lap |
 | GET | `/api/laptimes` | To populate the Dashboard's recent laps list |
+| GET | `/api/meta/assignable-users` | On connect, to fill the "Driving as" picker |
 
 Authentication uses a JWT token obtained at login. The token is stored in memory (not persisted to disk) and re-acquired on next launch.
+
+### Driver Switching
+
+`GET /api/meta/assignable-users` returns the drivers this key may file a lap
+under: its owner, plus every member of a group the owner is a group admin of.
+One entry back means no switching, and both the tray submenu and the Dashboard
+picker stay hidden. A server too old for the endpoint 404s, which lands in the
+same place.
+
+The chosen id is saved as `active_driver_id` and sent as `user_id` on the lap
+POST — omitted entirely when it is the key's own account, so a lap you drive
+yourself is the same request an older tray sent. It is stamped onto the
+`LapRecord` at detection time rather than at send time, so a lap queued while
+the server is unreachable keeps whoever was actually in the seat even if the
+driver changes before the queue drains.
+
+The server is the authority: it re-checks the group-admin rule on every POST
+and rejects anything else with `403`. A saved id the endpoint no longer returns
+— a group change, or a key for a different account — is dropped on the next
+connect and the app falls back to the key's own owner.
 
 ### Offline Queue
 

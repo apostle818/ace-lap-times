@@ -28,7 +28,7 @@ from PyQt6.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QSettings
 )
 from PyQt6.QtGui import (
-    QIcon, QPixmap, QPainter, QColor, QFont, QAction, QBrush
+    QIcon, QPixmap, QPainter, QColor, QFont, QAction, QActionGroup, QBrush
 )
 
 import requests
@@ -36,7 +36,7 @@ import requests
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 ORG_NAME = "ACELaps"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
@@ -64,6 +64,11 @@ class LapRecord:
     weather: str = "Clear"
     notes: str = ""
     recorded_at: str = ""
+    # Set only when the lap belongs to someone other than the account the API
+    # key was issued to. It lives on the record rather than being applied at
+    # send time so that a lap queued while offline keeps whoever was actually
+    # in the seat, however many times the driver changes before it goes up.
+    user_id: Optional[int] = None
 
     def formatted_time(self) -> str:
         m = self.laptime_ms // 60000
@@ -173,7 +178,30 @@ class APIClient:
 
     def submit_lap(self, lap: LapRecord) -> dict:
         url = f"{self.base_url}/api/laptimes"
-        resp = requests.post(url, json=asdict(lap), headers=self._headers(), timeout=10)
+        payload = asdict(lap)
+        # Dropped for your own laps, so the request is byte-for-byte what an
+        # older tray sent to a server that has never heard of driver switching.
+        if payload.get("user_id") is None:
+            payload.pop("user_id", None)
+        resp = requests.post(url, json=payload, headers=self._headers(), timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_me(self) -> dict:
+        url = f"{self.base_url}/api/auth/me"
+        resp = requests.get(url, headers=self._headers(), timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_assignable_users(self) -> list:
+        """
+        Drivers this key may file a lap under: its owner, plus the members of
+        any group the owner is a group admin of. A plain member's key gets a
+        one-entry list, and a server too old to know the endpoint 404s - both
+        end up with no driver switch, which is the right answer.
+        """
+        url = f"{self.base_url}/api/meta/assignable-users"
+        resp = requests.get(url, headers=self._headers(), timeout=10)
         resp.raise_for_status()
         return resp.json()
 
@@ -810,6 +838,19 @@ class MainWindow(QMainWindow):
         self.auto_submit = True
         self.pending_laps = []
 
+        # Who the next detected lap is filed under. `me_id` is the account the
+        # API key belongs to; `active_driver_id` is whoever is actually in the
+        # seat, which is the same person until someone switches it. The choice
+        # survives a restart, but is dropped the moment the server stops
+        # offering that driver - a group change or a different key must not
+        # leave laps quietly going to a name that is no longer allowed.
+        self.me_id = self.settings.value("user_id", 0, type=int) or None
+        self.drivers = []
+        self.active_driver_id = self.settings.value("active_driver_id", 0, type=int) or None
+        self.driver_actions = []
+        self.driver_action_group = None
+        self._connected = False
+
         self._current_track = ""
         self._current_car = ""
 
@@ -881,6 +922,16 @@ class MainWindow(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         layout.setSpacing(12)
+
+        # Who laps are filed under. Hidden entirely unless the server offers
+        # more than one driver, so a solo setup sees no extra control.
+        self.driver_group = QGroupBox("Driver")
+        driver_layout = QHBoxLayout(self.driver_group)
+        self.driver_combo = QComboBox()
+        self.driver_combo.currentIndexChanged.connect(self._on_driver_combo_changed)
+        driver_layout.addWidget(self.driver_combo, 1)
+        self.driver_group.setVisible(False)
+        layout.addWidget(self.driver_group)
 
         # Last detected lap
         lap_group = QGroupBox("Last Detected Lap")
@@ -1166,6 +1217,11 @@ class MainWindow(QMainWindow):
         self.tray_status.setEnabled(False)
         tray_menu.addAction(self.tray_status)
 
+        # Same switch as the dashboard combo, without opening the window -
+        # which is the point on a gaming PC when someone else takes the seat.
+        self.driver_menu = tray_menu.addMenu("Driving as")
+        self.driver_menu.menuAction().setVisible(False)
+
         tray_menu.addSeparator()
 
         quit_action = QAction("Quit", self)
@@ -1216,7 +1272,8 @@ class MainWindow(QMainWindow):
             laptime_ms=laptime_ms,
             weather=weather,
             notes=notes,
-            recorded_at=datetime.now().isoformat()
+            recorded_at=datetime.now().isoformat(),
+            user_id=self._lap_user_id(),
         )
 
         # Update dashboard
@@ -1229,10 +1286,12 @@ class MainWindow(QMainWindow):
 
         self._log(f"Lap detected: {track} / {car} – {lap.formatted_time()}")
 
-        # Tray notification
+        # Tray notification. It names the driver when it is not you, since
+        # that is the moment a forgotten switch is worth catching.
+        driver_note = f" · {self._active_driver_name()}" if lap.user_id else ""
         self.tray_icon.showMessage(
             "Lap Recorded" if self.auto_submit else "Lap Detected",
-            f"{lap.formatted_time()} at {track}",
+            f"{lap.formatted_time()} at {track}{driver_note}",
             QSystemTrayIcon.MessageIcon.Information,
             3000
         )
@@ -1350,6 +1409,13 @@ class MainWindow(QMainWindow):
             self.settings.setValue("display_name", display_name)
             self.settings.remove("token")  # drop any legacy JWT from an older version
 
+            # A key for a different account invalidates any saved driver
+            # choice, so reset before the new list is fetched below.
+            if data.get("id") and data["id"] != self.me_id:
+                self.me_id = data["id"]
+                self.active_driver_id = self.me_id
+            self.settings.setValue("user_id", self.me_id or 0)
+
             # Reflect the provisioned key back into the UI and clear the password.
             self.api_key_input.setText(self.api.api_key)
             self.password_input.clear()
@@ -1362,14 +1428,13 @@ class MainWindow(QMainWindow):
                     "unencrypted. Fine on your own network - see docs/TLS.md before "
                     "using it across the internet."
                 )
-            self.connection_status.setText(f"Connected as {display_name}")
-            self.connection_status.setStyleSheet("color: #2ec866; font-size: 12px; font-weight: 600;")
-            self.tray_status.setText(f"Connected: {display_name}")
+            self._connected = True
             self.status_label.setText(f"Connected to {url}")
             self._log(f"Connected to {url} as {display_name}")
 
             # Load metadata for dropdowns
             self._load_meta()
+            self._load_drivers()   # also refreshes the status lines above
             self._refresh_recent()
 
             # Register this tray instance with the server
@@ -1403,14 +1468,13 @@ class MainWindow(QMainWindow):
 
     def _check_connection(self):
         if self.api.is_connected():
-            name = self.settings.value("display_name", "User")
-            self.connection_status.setText(f"Connected as {name}")
-            self.connection_status.setStyleSheet("color: #2ec866; font-size: 12px; font-weight: 600;")
-            self.tray_status.setText(f"Connected: {name}")
-            self.status_label.setText(f"Connected – watching for laps")
+            self._connected = True
+            self.status_label.setText("Connected – watching for laps")
             self._load_meta()
+            self._load_drivers()   # sets the connection and tray status lines
             self._refresh_recent()
         else:
+            self._connected = False
             self.connection_status.setText("Not connected")
             self.connection_status.setStyleSheet("color: #e63946; font-size: 12px; font-weight: 600;")
             self.status_label.setText("Not connected – go to Settings to connect")
@@ -1433,7 +1497,8 @@ class MainWindow(QMainWindow):
     def _submit_lap(self, lap: LapRecord):
         try:
             self.api.submit_lap(lap)
-            self._log(f"Submitted: {lap.track} / {lap.car} – {lap.formatted_time()}")
+            who = f" for {self._driver_name(lap.user_id)}" if lap.user_id else ""
+            self._log(f"Submitted{who}: {lap.track} / {lap.car} – {lap.formatted_time()}")
         except Exception as e:
             self._log(f"Submit failed: {e}")
             self.pending_laps.append(lap)
@@ -1457,12 +1522,14 @@ class MainWindow(QMainWindow):
             laptime_ms=laptime_ms,
             weather=self.manual_weather.currentText(),
             notes=self.manual_notes.text().strip(),
-            recorded_at=datetime.now().isoformat()
+            recorded_at=datetime.now().isoformat(),
+            user_id=self._lap_user_id(),
         )
 
         if self.api.is_connected():
             self._submit_lap(lap)
-            self.manual_result.setText(f"Submitted: {lap.formatted_time()} at {track}")
+            who = f" for {self._active_driver_name()}" if lap.user_id else ""
+            self.manual_result.setText(f"Submitted{who}: {lap.formatted_time()} at {track}")
             self.manual_result.setStyleSheet("color: #2ec866;")
             # Reset time fields
             self.manual_min.setValue(0)
@@ -1474,6 +1541,144 @@ class MainWindow(QMainWindow):
             self.pending_laps.append(lap)
             self.manual_result.setText("Queued (not connected)")
             self.manual_result.setStyleSheet("color: #f4a623;")
+
+    # ── Driver switching ─────────────────────────────────────────────
+    #
+    # The API key stays the one issued to this Windows account. Switching the
+    # driver only changes whose name the lap is filed under, and the server
+    # allows it exactly as far as the key's owner group-admins - so a plain
+    # member's key never gets a switch to offer.
+
+    def _driver_name(self, user_id) -> str:
+        match = next((d for d in self.drivers if d["id"] == user_id), None)
+        if match:
+            return match["display_name"]
+        return self.settings.value("display_name", "User")
+
+    def _active_driver_name(self) -> str:
+        return self._driver_name(self.active_driver_id)
+
+    def _lap_user_id(self) -> Optional[int]:
+        """The id to file the next lap under, or None to use the key's own."""
+        if self.active_driver_id and self.me_id and self.active_driver_id != self.me_id:
+            return self.active_driver_id
+        return None
+
+    def _connection_label(self) -> str:
+        owner = self.settings.value("display_name", "User")
+        if self._lap_user_id():
+            return f"{owner} (driving as {self._active_driver_name()})"
+        return owner
+
+    def _load_drivers(self):
+        try:
+            # Upgrading from a version that never stored it - including the
+            # legacy-token migration, which connects without going through
+            # Settings - leaves the owning account unknown. Without it a
+            # switch cannot tell "me" from "someone else", so establish it
+            # before the list is any use.
+            if self.me_id is None:
+                self.me_id = self.api.get_me().get("id")
+                self.settings.setValue("user_id", self.me_id or 0)
+            drivers = self.api.get_assignable_users()
+        except Exception:
+            # No connection, or a server too old to know the endpoint. Either
+            # way there is nothing to switch between.
+            drivers = []
+        self._apply_driver_list(drivers)
+
+    def _apply_driver_list(self, drivers: list):
+        self.drivers = drivers
+        ids = {d["id"] for d in drivers}
+        # A driver the server no longer offers is one we may no longer file
+        # under, so the saved choice is dropped rather than kept and refused.
+        if self.active_driver_id is not None and self.active_driver_id not in ids:
+            if self.active_driver_id != self.me_id:
+                self._log("Saved driver is no longer available – laps go under your own name")
+            self.active_driver_id = None
+        if self.active_driver_id is None:
+            self.active_driver_id = self.me_id
+        self.settings.setValue("active_driver_id", self.active_driver_id or 0)
+        self._rebuild_driver_widgets()
+
+    def _driver_label(self, driver: dict) -> str:
+        return driver["display_name"] + (" (you)" if driver["id"] == self.me_id else "")
+
+    def _rebuild_driver_widgets(self):
+        # One driver means no choice to make, so neither control appears -
+        # and neither does it while we do not know which of them is us.
+        show = self.me_id is not None and len(self.drivers) > 1
+        self.driver_group.setVisible(show)
+        self.driver_menu.menuAction().setVisible(show)
+
+        self.driver_combo.blockSignals(True)
+        self.driver_combo.clear()
+        for d in self.drivers:
+            self.driver_combo.addItem(self._driver_label(d), d["id"])
+        index = self.driver_combo.findData(self.active_driver_id)
+        if index >= 0:
+            self.driver_combo.setCurrentIndex(index)
+        self.driver_combo.blockSignals(False)
+
+        self.driver_menu.clear()
+        self.driver_actions = []
+        # Parented to the group, so replacing the group on the next reconnect
+        # takes the old actions with it instead of piling them up on the window.
+        self.driver_action_group = QActionGroup(self)
+        self.driver_action_group.setExclusive(True)
+        for d in self.drivers:
+            action = QAction(self._driver_label(d), self.driver_action_group)
+            action.setCheckable(True)
+            action.setData(d["id"])
+            action.setChecked(d["id"] == self.active_driver_id)
+            action.triggered.connect(lambda _checked, uid=d["id"]: self._set_active_driver(uid))
+            self.driver_action_group.addAction(action)
+            self.driver_menu.addAction(action)
+            self.driver_actions.append(action)
+
+        self._update_driver_labels()
+
+    def _on_driver_combo_changed(self, index: int):
+        if index >= 0:
+            self._set_active_driver(self.driver_combo.itemData(index))
+
+    def _set_active_driver(self, user_id):
+        if user_id is None or user_id == self.active_driver_id:
+            return
+        # Only a driver the server currently offers. The widgets are built
+        # from that same list, so this only bites if one goes stale.
+        if not any(d["id"] == user_id for d in self.drivers):
+            return
+        self.active_driver_id = user_id
+        self.settings.setValue("active_driver_id", user_id)
+
+        index = self.driver_combo.findData(user_id)
+        if index >= 0 and index != self.driver_combo.currentIndex():
+            self.driver_combo.blockSignals(True)
+            self.driver_combo.setCurrentIndex(index)
+            self.driver_combo.blockSignals(False)
+        for action in self.driver_actions:
+            action.setChecked(action.data() == user_id)
+
+        name = self._active_driver_name()
+        self._log(f"Driver switched to {name} – laps are filed under that name")
+        self.tray_icon.showMessage(
+            APP_NAME, f"Now driving as {name}",
+            QSystemTrayIcon.MessageIcon.Information, 2500
+        )
+        self._update_driver_labels()
+
+    def _update_driver_labels(self):
+        """Keep the tray tooltip and status lines honest about who laps go to."""
+        driver = self._active_driver_name()
+        self.tray_icon.setToolTip(
+            f"{APP_NAME} — driving as {driver}" if self._lap_user_id() else APP_NAME
+        )
+        if self._connected:
+            label = self._connection_label()
+            self.tray_status.setText(f"Connected: {label}")
+            self.connection_status.setText(f"Connected as {label}")
+            self.connection_status.setStyleSheet("color: #2ec866; font-size: 12px; font-weight: 600;")
 
     def _load_meta(self):
         try:
