@@ -1,6 +1,6 @@
 # ACE Tray — Technical Documentation
 
-> **Version 3.0.0** — [User Guide](README.md)
+> **Version 1.4.0** — [User Guide](README.md)
 
 This document covers the internal architecture, log parsing logic, configuration storage, and extension points for the tray app.
 
@@ -26,7 +26,7 @@ The app runs entirely on the local Windows machine. It has no server component o
 | GUI framework | PyQt6 6.6+ |
 | HTTP client | requests 2.31+ |
 | Log monitoring | Python file tail loop (2s interval) |
-| Config storage | JSON file, per Windows user profile |
+| Config storage | `QSettings` — Windows registry, per Windows user account |
 | Packaging | Python venv + `start.bat` launcher |
 
 ---
@@ -47,25 +47,39 @@ All logic lives in `ace_tray.py`. It is a single-file PyQt6 application with no 
 
 ## Configuration Storage
 
-Settings are stored as JSON at:
+Settings go through `QSettings(ORG_NAME, APP_NAME)`, which on Windows is the
+registry under:
 
 ```
-%APPDATA%\ACETray\config.json
+HKCU\Software\ACELaps\ACE Lap Tracker
 ```
 
-Because `%APPDATA%` is user-scoped (`C:\Users\<username>\AppData\Roaming`), each Windows user has an independent configuration file. This is what enables per-driver credentials on a shared PC.
+`HKCU` is the *current user's* hive, so each Windows account has an
+independent store. That is what enables per-driver setup on a shared PC —
+each account connects with its own API key and tracks separately.
 
-Example config structure:
+| Key | Written by | Holds |
+|-----|-----------|-------|
+| `server_url` | Connect | Base URL of the backend |
+| `api_key` | Connect | The `alt_...` key, the only long-lived secret on disk |
+| `username` | Connect | Echoed back from the server, for display |
+| `display_name` | Connect | Echoed back from the server, for display |
+| `user_id` | Connect | The account the key belongs to; recovered from `/api/auth/me` if missing |
+| `active_driver_id` | "Driving as" | Who laps are currently filed under |
+| `client_id` | First launch | UUID identifying this tray instance to the heartbeat |
+| `log_path` | Settings tab | ACE `Logs` directory, or a single `log.txt` |
+| `auto_submit` | Settings tab | `"true"` / `"false"` |
 
-```json
-{
-  "server_url": "http://your-server-ip:8099",
-  "username": "driver1",
-  "password": "...",
-  "log_path": "C:\\Users\\driver1\\Saved Games\\ACE\\Logs\\log.txt",
-  "auto_submit": true
-}
-```
+**No password is ever written.** On the password fallback path the credentials
+are exchanged for an API key and discarded in memory; only the key is stored.
+A `token` key from a pre-API-key build is deleted on sight — see
+`_migrate_legacy_token()`, which trades a still-valid JWT for a key once and
+then removes it.
+
+Because this is the registry and not a file, there is nothing to copy between
+machines: to move a setup, create a new key on the website and paste it in.
+Copying the store wholesale also duplicates `client_id`, which the server
+refuses with a `409` — the app then mints itself a fresh one.
 
 ---
 
@@ -155,13 +169,31 @@ The tray app uses the ACE Lap Tracker REST API. The relevant endpoints it calls:
 
 | Method | Endpoint | When |
 |--------|----------|------|
-| POST | `/api/auth/login` | On "Connect" in Settings |
-| GET | `/api/auth/me` | To verify the token is still valid |
+| GET | `/api/auth/me` | On "Connect" to verify the key; then before each submit or refresh, as the connection check |
 | POST | `/api/laptimes` | After each detected or manually entered lap |
 | GET | `/api/laptimes` | To populate the Dashboard's recent laps list |
+| GET | `/api/meta/tracks`, `/api/meta/cars` | To fill the Manual Entry dropdowns |
 | GET | `/api/meta/assignable-users` | On connect, to fill the "Driving as" picker |
+| POST | `/api/client/heartbeat` | Every 30s, so the admin Connected Clients view can see this instance |
+| POST | `/api/client/disconnect` | On quit |
+| POST | `/api/auth/login` then `/api/keys` | Password fallback only — see below |
 
-Authentication uses a JWT token obtained at login. The token is stored in memory (not persisted to disk) and re-acquired on next launch.
+Authentication is an **API key**, sent as `X-API-Key: alt_...` on every request
+(`APIClient._headers()`). The key is upload-only: the backend accepts it on a
+short allowlist of endpoints — everything in the table above except the two
+password-fallback rows, which are JWT routes — and answers `403` everywhere
+else. It carries no role either, so even a superadmin's key cannot reach an
+admin route, and it is revocable from the website without touching the account
+password. The root [README](../README.md#authentication) has the authoritative
+list.
+
+A JWT appears in exactly one place. If you use *"Or sign in with username &
+password"* in Settings, `provision_key()` posts the credentials to
+`/api/auth/login`, uses the returned token once to `POST /api/keys`, and
+discards both the token and the password — so the only thing that reaches
+disk is the key. That path exists for upgrades and for anyone who would
+rather not visit the website; pasting a key created under **My Profile → API
+Keys** is the normal route.
 
 ### Driver Switching
 
@@ -185,7 +217,17 @@ connect and the app falls back to the key's own owner.
 
 ### Offline Queue
 
-If a POST to `/api/laptimes` fails (network error, server unreachable), the lap is added to an in-memory queue. The app retries queued laps periodically. **Queued laps are lost if the app is closed before they are submitted** — this is a known limitation.
+If a POST to `/api/laptimes` fails (network error, server unreachable), the
+lap is added to an in-memory queue, as is any lap detected while auto-submit
+is off or the app is disconnected.
+
+The queue is flushed on a successful **Connect** in Settings — and only
+there. There is no periodic retry, so a tray that loses the server mid-session
+holds its laps until you reconnect by hand. **Queued laps are lost if the app
+is closed before they are submitted.** Both are known limitations.
+
+A queued lap keeps the `user_id` it was detected under, so switching driver
+before the queue drains does not re-attribute laps somebody else drove.
 
 ---
 

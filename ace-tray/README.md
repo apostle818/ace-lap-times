@@ -1,8 +1,8 @@
 # ACE Tray — Windows Companion App
 
-> **Version 3.0.0** — [Technical Documentation](TECHNICAL.md)
+> **Version 1.4.0** — [Technical Documentation](TECHNICAL.md)
 
-A Windows system tray app that watches Assetto Corsa Evo for completed laps and automatically submits them to your [ACE Lap Tracker](../ace-laptimes/README.md) server. No manual entry needed during a session.
+A Windows system tray app that watches Assetto Corsa Evo for completed laps and automatically submits them to your [ACE Lap Tracker](../README.md) server. No manual entry needed during a session.
 
 ---
 
@@ -24,8 +24,10 @@ A Windows system tray app that watches Assetto Corsa Evo for completed laps and 
 - **Windows 10 or 11**
 - **Python 3.10 or newer** — [download from python.org](https://www.python.org/downloads/)
   - During installation, check **"Add Python to PATH"**
+  - Not needed if you use the prebuilt `ACELapTracker.exe` from the
+    [latest release](../../../releases/latest) — see step 1 below
 - **Assetto Corsa Evo** installed and run at least once (so the log file exists)
-- **ACE Lap Tracker server** reachable on your network — see the [server setup guide](../ace-laptimes/README.md)
+- **ACE Lap Tracker server** reachable on your network — see the [server setup guide](../README.md#server)
 
 ---
 
@@ -33,7 +35,12 @@ A Windows system tray app that watches Assetto Corsa Evo for completed laps and 
 
 ### 1. Install
 
-Copy the `ace-tray` folder to your gaming PC. Any location works, for example:
+**Easiest:** download `ACELapTracker.exe` from the
+[latest release](../../../releases/latest) and run it — no Python, no virtual
+environment, nothing to build. Then skip to step 3.
+
+**From source:** copy the `ace-tray` folder to your gaming PC. Any location
+works, for example:
 
 ```
 C:\Tools\ace-tray\
@@ -52,13 +59,25 @@ The first launch takes a minute while packages are installed. Subsequent launche
 
 When the app opens for the first time:
 
-1. Go to the **Settings** tab
-2. Enter your **server URL** — e.g. `http://your-server-ip:8099`
-3. Enter your **username** and **password** (your ACE Lap Tracker account)
-4. Click **Connect** — the status indicator should turn green
-5. Verify the **log file path** points to your ACE `log.txt` (the app fills in the default path automatically)
+1. On the website, go to **My Profile → API Keys**, create a key, and copy it
+   (it is shown once and cannot be recovered afterwards)
+2. In the app, go to the **Settings** tab
+3. Enter your **server URL** — e.g. `http://your-server-ip:8099`
+4. Paste the **API key**
+5. Click **Connect** — the status indicator should turn green
+6. Verify the **log file path** points to your ACE `Logs` folder (the app fills
+   in the default path automatically)
 
-If other people use this PC with their own Windows accounts, they should repeat this step while logged in as themselves. Settings are stored per Windows user.
+No password is involved, and none is stored. The key uploads laps and nothing
+else, and you can revoke it from the website without changing your password.
+
+> **Prefer not to visit the website?** Expand *"Or sign in with username &
+> password"* and connect with your account instead. The app creates a key for
+> itself and stores only that — your password is never written to disk.
+
+If other people use this PC with their own Windows accounts, they should repeat
+this step while logged in as themselves, with their own key. Settings live in
+the registry under `HKCU`, so each Windows account is independent.
 
 ### 4. Auto-start (Optional)
 
@@ -106,7 +125,7 @@ To fully quit: **right-click the tray icon** → **Quit**.
 |-----|-------------|
 | **Dashboard** | Who laps are filed under, last detected lap, current session info (track, car, weather), and recent laps fetched from the server |
 | **Manual Entry** | Form to manually log a lap time — useful as a fallback or for logging laps from another session |
-| **Settings** | Server URL, credentials, log file path, and auto-submit toggle |
+| **Settings** | Server URL, API key, log file path, and auto-submit toggle |
 | **Activity Log** | Live feed of what the app is doing — useful for diagnosing issues |
 
 ---
@@ -122,8 +141,11 @@ To fully quit: **right-click the tray icon** → **Quit**.
 **Can't connect to server**
 → Verify the server URL in Settings. Make sure the Docker stack is running. Try opening `http://your-server-ip:8099` in a browser — if that works, the problem is in the tray app config.
 
-**Wrong account / credentials**
-→ Go to Settings, update your username/password, and click Connect again.
+**Wrong account, or a revoked key**
+→ Go to Settings, paste a new API key, and click Connect again. *"Invalid,
+revoked or expired API key"* means the key no longer works — create a fresh
+one on the website. Connecting with a key for a different account also resets
+the **Driving as** choice back to that account.
 
 **App doesn't appear in the tray**
 → Check if it's hidden in the overflow tray area (the `^` arrow in the taskbar). If the app crashed, re-run `start.bat` and check the Activity Log for errors.

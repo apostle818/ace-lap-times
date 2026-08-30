@@ -263,7 +263,7 @@ and the app shows *Not connected*. Fix it in either of these ways:
 **Option A — standalone executable (new, no Python needed)**
 
 Download `ACELapTracker.exe` from the
-[latest release](../../releases/latest) and run it. If you previously used
+[latest release](../../../releases/latest) and run it. If you previously used
 `start.bat`, close the old app first — both read the same saved settings, so
 your connection carries over.
 
