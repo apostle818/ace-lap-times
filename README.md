@@ -53,9 +53,10 @@ Three Docker containers on a shared bridge network. The tray app runs on your ga
 
 **Requirements:** Docker and Docker Compose
 
-Images are published for `linux/amd64`, `linux/arm64` and `linux/arm/v7`, so a
-Raspberry Pi 3 or newer works out of the box. ARMv6 (Pi Zero / Pi Zero W / Pi 1)
-is **not supported** — see [docs/BUILDS.md](docs/BUILDS.md).
+Images are published for `linux/amd64` and `linux/arm64`, so a
+Raspberry Pi 3 or newer on a 64-bit OS works out of the box. 32-bit ARM
+(ARMv7/armhf) and ARMv6 (Pi Zero / Pi Zero W / Pi 1) are **not supported** —
+see [docs/BUILDS.md](docs/BUILDS.md).
 
 1. Download [`ace-laptimes/docker-compose.yml`](ace-laptimes/docker-compose.yml)
 
@@ -240,7 +241,7 @@ towards their leaderboard entry and personal bests, not the uploader's.
 - [x] Progress chart requires track + car selection
 - [x] GitHub release
 - [x] API key auth for the tray app
-- [x] Multi-arch image builds via GitHub Actions (amd64 / arm64 / armv7)
+- [x] Multi-arch image builds via GitHub Actions (amd64 / arm64)
 - [x] Windows .exe built in CI
 - [x] Reassign a lap to another driver, on the web and from the tray
 - [ ] Public site with MFA & group/team setup

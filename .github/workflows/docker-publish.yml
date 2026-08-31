@@ -11,8 +11,8 @@ name: Build & publish Docker images
 #   DOCKERHUB_USERNAME  - Docker Hub account name
 #   DOCKERHUB_TOKEN     - Docker Hub access token with Read & Write scope
 #
-# Architectures: linux/amd64, linux/arm64, linux/arm/v7.
-# ARMv6 (Pi Zero W, Pi 1) is NOT built - see docs/BUILDS.md for why.
+# Architectures: linux/amd64, linux/arm64.
+# 32-bit ARM (armhf/ARMv7) and ARMv6 are NOT built - see docs/BUILDS.md for why.
 
 on:
   push:
@@ -32,7 +32,7 @@ on:
 env:
   REGISTRY_NAMESPACE: apostle818
   APP: ace-laptimes
-  PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+  PLATFORMS: linux/amd64,linux/arm64
 
 concurrency:
   group: docker-publish-${{ github.ref }}
@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Emulation for the arm64 and arm/v7 legs.
+      # Emulation for the arm64 leg.
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
