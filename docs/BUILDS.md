@@ -39,10 +39,21 @@ Every image is published as a multi-arch manifest for:
 |---|---|
 | `linux/amd64` | Any x86-64 server, NAS, mini PC |
 | `linux/arm64` | Raspberry Pi 3/4/5 on 64-bit Raspberry Pi OS, Apple Silicon, ARM VPS |
-| `linux/arm/v7` | Raspberry Pi 2/3/4 on 32-bit Raspberry Pi OS, older ARM NAS |
 
 Docker picks the right one automatically — `docker compose pull` needs no
 per-architecture configuration.
+
+### 32-bit ARM (ARMv7 / armhf) is not built
+
+The `node` base image used by the frontend stopped publishing a
+`linux/arm/v7` manifest, so a three-platform build fails at the
+`load metadata` step before anything is compiled. Rather than pin the
+frontend to an old Node major to keep one legacy leg alive, 32-bit ARM was
+dropped.
+
+Raspberry Pi 2 has no 64-bit mode and is therefore no longer supported. A Pi
+3, 4 or 5 running a 32-bit OS needs to be reinstalled with 64-bit Raspberry
+Pi OS to use these images — the hardware itself is fine.
 
 ### ARMv6 (Pi Zero / Pi Zero W / Pi 1) is not supported
 
@@ -66,7 +77,7 @@ would need to replace `bcrypt` in `app.py`, with a migration for existing
 password hashes). That is not currently implemented.
 
 **Pi Zero 2 W is fine** — it is ARM Cortex-A53, so it runs the `arm64` image
-on a 64-bit OS or `arm/v7` on a 32-bit one.
+on a 64-bit OS.
 
 ## Build cache
 
