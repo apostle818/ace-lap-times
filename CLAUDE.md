@@ -48,13 +48,15 @@ groups-as-privacy-boundary, CSV injection, strict CSP, non-root containers,
   CI (`.github/workflows/ci.yml`) and by weekly Dependabot PRs
   (`.github/dependabot.yml`) — a known CVE in a pin fails the build, so
   don't add a new dependency without leaving it inside that check.
-- **`ace-tray/requirements.txt` uses `>=` (`PyQt6>=6.6.0`,
-  `requests>=2.31.0`) while the backend pins exact versions (`==`).** This
-  makes the tray app's dependency set non-reproducible across builds — two
-  builds of the same commit can ship different transitive versions, and
-  PyInstaller bundles whatever was resolved at build time (`.github/workflows/tray-release.yml`
-  has no lockfile to pin against). Prefer `==` here too, or add a
-  `pip freeze`-generated constraints file the release workflow installs from.
+- **`ace-tray/requirements.txt` now pins exact versions (`==`), matching the
+  backend.** It used to use `>=` (`PyQt6>=6.6.0`, `requests>=2.31.0`), which
+  made the tray app's dependency set non-reproducible across builds — two
+  builds of the same commit could ship different transitive versions, and
+  PyInstaller bundles whatever was resolved at build time
+  (`.github/workflows/tray-release.yml` has no lockfile to pin against).
+  Fixed in the 2026-08-31 follow-up pass (see audit summary below). Keep
+  pinning exactly here going forward; Dependabot already opens PRs for both
+  manifests, so a bump is a review, not a rewrite.
 - Chart.js is vendored at a pinned version (`ace-laptimes/frontend/Dockerfile`,
   `chart.js@4.4.7`) rather than pulled from a CDN — keep doing this for any
   future frontend dependency; it's what lets the CSP stay `script-src 'self'`
@@ -105,10 +107,62 @@ root master process. Findings, all Low/Medium — nothing Critical or High:
 
 - **Medium** — `ace-tray/requirements.txt` uses unpinned (`>=`) dependency
   versions while every other manifest in the repo pins exactly; see
-  "Dependencies" above.
+  "Dependencies" above. **Resolved** in the follow-up pass below.
 - **Low** — Tray app persists its API key in the Windows registry via
   `QSettings` in plaintext (`ace_tray.py`); scope is already limited
   server-side.
 - **Low** — Session JWT is kept in `localStorage` rather than an httpOnly
   cookie, so a future XSS regression would be directly exploitable; the
   current CSP and consistent `escapeHtml` usage keep this theoretical today.
+
+### Follow-up pass (2026-08-31, branch `claude/affectionate-planck-rj1zld`)
+
+Scheduled regression + dependency sweep, run after the "Let a lap be moved
+to another driver" and "Let sign-out-everywhere optionally revoke API keys"
+changes had already landed on `main`. Re-checked every closed item above
+against the current code rather than assuming it still holds:
+
+- Every route in `app.py` still carries an explicit auth decorator,
+  including the two added since the original audit
+  (`PUT /api/laptimes/<id>`'s new reassignment path and the new
+  `GET /api/meta/assignable-users`, both correctly scoped — the former
+  reuses `_may_act_for()` for both the lap's old and new owner, closing a
+  user-enumeration path in the same change; the latter is
+  `@token_or_key_required` on purpose, since the tray needs it to build its
+  own driver picker). `revoke_sessions` (the new opt-in API-key revocation)
+  is still `@token_required` only, matching its docstring's claim that an
+  API key cannot reach it.
+- `_visibility_clause` / `_can_view_user`, `FIELD_LIMITS` / `clean_text`,
+  and `_csv_safe` are all unchanged and still exercised the same way; no new
+  free-text field or export column was added that bypasses them.
+- Every new DOM write in `app.js` (the reassign-driver `<select>`, the move
+  confirmation and error messages) goes through `escapeHtml`. CSP in
+  `nginx.conf` is unchanged (`script-src 'self'`, no `unsafe-inline`,
+  `frame-ancestors 'none'`). Both Dockerfiles still drop to a non-root user
+  (backend via `gosu` in `docker-entrypoint.sh`, frontend via `USER node`).
+  No CORS layer was added to the backend (same-origin only, via nginx).
+  `_load_secret_key` / `_REJECTED_SECRET_KEYS` unchanged.
+- `git log -p` / `-S` re-run across the full history (including commits
+  since the original audit) for the same secret patterns — nothing found
+  beyond the already-known rejected `SECRET_KEY` placeholders.
+- `pip-audit --strict` against both `requirements.txt` files (backend and
+  tray, same invocation CI uses): **no known vulnerabilities** in either as
+  of this pass.
+- No `AGENTS.md` or similar file anywhere in the repo, and nothing in
+  code comments, README, or CONTRIBUTING.md that reads as an attempt to
+  redirect an agent's behavior or claim special authority — none found.
+- **Medium, fixed** — `ace-tray/requirements.txt` pinned from `>=6.11.0`
+  / `>=2.34.2` to `==6.11.0` / `==2.34.2` (both already the latest
+  available version at the time of the last Dependabot bump, and both
+  verified installable). Dependabot's existing `pip` job for
+  `/ace-tray` will keep opening PRs for future bumps the same way it does
+  for the backend's exact pins.
+- **Low, re-verified, unchanged** — tray API key still in the Windows
+  registry via `QSettings` in plaintext; still pinned to `scope='tray'`
+  server-side (`_acting_as_superadmin` in `app.py` still refuses to let an
+  API key act with elevated rights, however privileged the owning account).
+  Accepted tradeoff, not touched.
+- **Low, re-verified, unchanged** — JWT still in `localStorage`, not an
+  httpOnly cookie. Accepted tradeoff, not touched.
+- No new CVEs, no new Critical/High findings, no regressions in any
+  previously-closed item.
