@@ -576,9 +576,10 @@ def parse_int(value, name, minimum=None, maximum=None):
 # and answered for any account on the instance, so group membership gated
 # writes but not a single read.
 #
-# The user directory (/api/meta/users) is deliberately not scoped this way
-# for group admins — they need to see who exists in order to add members —
-# but it carries no lap data, only id, username and display name.
+# The directory (/api/meta/users) follows the same rule. It used to widen to
+# every account on the instance for anyone who group-admins anywhere, on the
+# grounds that they needed it in order to add members — but adding members
+# directly is superadmin-only now, so that justification is gone with it.
 
 def _visible_user_ids(db, user_id):
     """Ids whose lap data `user_id` may read: themselves plus co-members."""
@@ -608,12 +609,6 @@ def _can_view_user(target_user_id):
     if g.current_user_role == "superadmin":
         return True
     return int(target_user_id) in _visible_user_ids(get_db(), g.current_user_id)
-
-def _is_group_admin_somewhere(db, user_id):
-    return db.execute(
-        "SELECT 1 FROM group_members WHERE user_id = ? AND role = 'group_admin'",
-        (user_id,),
-    ).fetchone() is not None
 
 # ─── Lap attribution ─────────────────────────────────────────────────
 #
@@ -1268,16 +1263,27 @@ def delete_group(group_id):
     return jsonify({"message": "Deleted"})
 
 @app.route("/api/groups/<int:group_id>/members", methods=["POST"])
-@token_required
+@superadmin_required
 def add_group_member(group_id):
+    """
+    Place someone in a group directly. Superadmin only, deliberately.
+
+    A group admin used to be able to do this for any user_id on the
+    instance — no consent from the target, no check that they were already
+    visible, and the full directory handed over to pick from. Because
+    _group_admin_member_ids() derives both _may_act_for() and the
+    visibility helpers from a group's membership, one POST here turned
+    "outside my boundary" into "inside my boundary": the caller could then
+    read that person's laps, reassign them and delete them. The role is
+    meant to be scoped to a group; it was scoped to a set its holder chose.
+
+    Group admins add people with an invite link instead (create_invite,
+    then join_via_invite), where the target opts in — a path that already
+    carries expiry, a use limit and revocation. A superadmin placing
+    someone directly is an authority decision, not an escalation: they can
+    already act for every account regardless.
+    """
     db = get_db()
-    if g.current_user_role != "superadmin":
-        my_m = db.execute(
-            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
-            (group_id, g.current_user_id)
-        ).fetchone()
-        if not my_m or my_m["role"] != "group_admin":
-            return jsonify({"error": "Permission denied"}), 403
     data = request.get_json(silent=True) or {}
     user_id = data.get("user_id")
     role = data.get("role", "member")
@@ -1749,10 +1755,10 @@ def get_cars():
 @token_required
 def get_users():
     db = get_db()
-    # Group admins need the full directory to add people to their groups;
-    # a plain member only ever sees the people they already share a group
-    # with. Either way this returns no lap data.
-    if g.current_user_role == "superadmin" or _is_group_admin_somewhere(db, g.current_user_id):
+    # Only a superadmin sees every account. Everyone else — group admins
+    # included — sees the people they already share a group with, which is
+    # the same set the lap reads are scoped to.
+    if g.current_user_role == "superadmin":
         rows = db.execute(
             "SELECT id, username, display_name FROM users ORDER BY display_name"
         ).fetchall()

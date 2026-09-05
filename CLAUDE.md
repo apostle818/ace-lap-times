@@ -18,6 +18,14 @@ groups-as-privacy-boundary, CSV injection, strict CSP, non-root containers,
   able to reach it at all (most shouldn't — see `token_or_key_required`'s
   docstring) and whether a group admin's reach needs to be bounded the way
   `_may_act_for` / `_visibility_clause` bound the existing ones.
+- **Nothing may let a caller enlarge the set its own privileges are
+  computed from.** `_may_act_for` and the visibility helpers both derive
+  their answer from group membership, so any route that changes membership
+  is a privilege boundary, not a convenience. Placing someone in a group
+  directly is `@superadmin_required` for exactly this reason; a group admin
+  brings people in with an invite, where the target opts in. If you add a
+  route that writes to `group_members`, ask who chooses the target before
+  asking whether the caller is allowed to call it.
 - **Reads stay scoped through `_visibility_clause` / `_can_view_user`.**
   Any new query that returns lap data must run it through the visibility
   helpers, not just check group membership on write. The whole privacy model
@@ -188,25 +196,37 @@ design held under an attack it was not written for.
 
 New findings, none Critical or High:
 
-- **Medium, open** — `group_admin` is not actually a group-scoped role.
-  `add_group_member` (`app.py:1270`) accepts any `user_id` with no consent
-  step and no check that the target is already visible to the caller, and
-  `/api/meta/users` hands group admins the full directory. Because
+- **Medium, fixed** — `group_admin` was not actually a group-scoped role.
+  `add_group_member` accepted any `user_id` with no consent
+  step and no check that the target was already visible to the caller, and
+  `/api/meta/users` handed group admins the full directory. Because
   `_group_admin_member_ids` derives `_may_act_for` and the visibility helpers
-  from that self-controlled set, one POST converts any account on the instance
-  into one whose laps the caller can read, reassign and delete. Reproduced
+  from that set, one POST converted any account on the instance into one
+  whose laps the caller could read, reassign and delete. Reproduced
   end-to-end. A plain member gets 403 and an API key is refused, so the bound
-  is real — it is just self-serve. **Needs a product decision**: either route
-  direct adds through the existing invite flow, or state plainly here that
-  `group_admin` is an instance-wide data role. Do not leave the docs claiming
-  a boundary that is not enforced.
-- **Medium, open** — `.gitignore` has no `.env` rule, while `README.md:63` and
+  was real — it was just self-serve. **Resolved**: `add_group_member` is now
+  `@superadmin_required`, and group admins bring people in with an invite
+  link (`create_invite` / `join_via_invite`), where the target opts in and
+  the existing expiry / use-limit / revocation controls apply. With that
+  route closed, `/api/meta/users` no longer widens to the full directory for
+  group admins either — the only justification for it was the feature that
+  moved — so `_is_group_admin_somewhere` is gone and everyone but a
+  superadmin now sees exactly the set the lap reads are scoped to. The
+  frontend's Add Member panel is superadmin-only to match, and `README.md`
+  and `docs/UPGRADING.md` were corrected. Verified: the original attack now
+  fails at its first call, the invite path still grants authority once
+  someone joins voluntarily, and group admins keep every other group-management
+  power they had.
+- **Medium, fixed** — `.gitignore` had no `.env` rule, while `README.md:63` and
   `docs/UPGRADING.md:61` instruct creating one containing `SECRET_KEY` inside
   the clone. Verified: the file is untracked but not ignored, so `git add .`
   stages a live signing key on a public repo. The previous audit checked that
-  no `.env` had been committed, not whether the next one would be. One-line
-  fix; also worth mirroring into both `.dockerignore` files.
-- **Low, open** — `remove_group_member` (`app.py:1323`) has no self-removal
+  no `.env` had been committed, not whether the next one would be.
+  **Resolved**: `.gitignore` now carries `.env` / `.env.*` with an
+  `!.env.example` escape hatch, verified against the exact command the README
+  gives, from both the repo root and `ace-laptimes/`. The backend
+  `.dockerignore` already had `.env`; the frontend and nginx ones now do too.
+- **Low, open** — `remove_group_member` (`app.py:1331`) has no self-removal
   case, so a member cannot leave a group they were added to.
 - **Low, open** — `index.html:8-9` loads Google Fonts from
   `fonts.googleapis.com` / `fonts.gstatic.com`, and the CSP admits both. The

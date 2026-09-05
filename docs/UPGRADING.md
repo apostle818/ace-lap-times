@@ -86,7 +86,9 @@ nothing else. Previously every driver could see every lap on the instance.
 in any group now see only themselves. Put everyone who should share a
 leaderboard into a group:
 
-*Groups → pick a group → Add Member*, or send them an invite link.
+*Groups → pick a group → Add Member* if you are a superadmin, or send them an
+invite link from the same page. Group admins use the invite link — only a
+superadmin can add someone directly.
 
 Superadmins still see everything.
 

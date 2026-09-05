@@ -5,6 +5,16 @@ __pycache__/
 .venv/
 venv/
 
+# Secrets
+#
+# docker-compose.yml, README.md and docs/UPGRADING.md all tell you to create
+# a .env here holding SECRET_KEY. Untracked is not the same as ignored: a
+# `git add .` would otherwise stage a live JWT signing key, and anyone who
+# has it can forge a token for any account and any role.
+.env
+.env.*
+!.env.example
+
 # Local data / build
 *.db
 *.sqlite

@@ -189,12 +189,18 @@ passing their `user_id` to the API.
 | | Sees |
 |---|---|
 | Superadmin | Everything on the instance |
-| Group admin | Their own laps and their groups' members' laps; the full driver directory, so they can add members |
+| Group admin | Their own laps and their groups' members' laps; only co-members in the directory |
 | Member | Their own laps and their groups' members' laps; only co-members in the directory |
 | Member with no group | Only their own laps |
 
 A driver with no group sees only themselves, so put everyone in a group if
 you want a shared leaderboard.
+
+Only a superadmin can place someone into a group directly. A group admin
+invites instead — *Groups → pick a group → Invite Links* — and the person
+joins by opening the link. That is deliberate: a group is what the visibility
+and lap-attribution rules below are built on, so being added to one has to be
+something you agreed to, not something done to you.
 
 ### Who a lap can be filed under
 

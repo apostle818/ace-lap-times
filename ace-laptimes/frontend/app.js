@@ -1463,7 +1463,7 @@ function renderGroupDetail() {
       </div>`:''}
     </div>
 
-    ${canManage && nonMembers.length>0?`
+    ${isSuperAdmin && nonMembers.length>0?`
     <div class="card fade-in">
       <div class="card-header"><span class="card-title">Add Member</span></div>
       <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;">
@@ -1520,7 +1520,8 @@ function renderGroupDetail() {
     <div class="card fade-in">
       <div class="card-header"><span class="card-title">Invite Links</span></div>
       <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
-        Anyone with a link can join this group, so give it an expiry and a use
+        ${isSuperAdmin?'':'Share a link to add someone to this group — they join by opening it, so nobody is added without knowing. '}Anyone
+        with a link can join this group, so give it an expiry and a use
         limit. You can revoke a link at any time.
       </p>
       <div class="form-grid">
