@@ -49,7 +49,7 @@ jobs:
     outputs:
       services: ${{ steps.select.outputs.services }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dorny/paths-filter@v4
         id: filter
@@ -110,7 +110,7 @@ jobs:
       matrix:
         service: ${{ fromJSON(needs.changes.outputs.services) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Emulation for the arm64 leg.
       - name: Set up QEMU
