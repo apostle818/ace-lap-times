@@ -1,5 +1,23 @@
 # CLAUDE.md
 
+## Working in this repository
+
+- **Every change lands through a pull request. No exceptions.** Do not push to
+  `main`, and do not fast-forward `main` onto a working branch — including when
+  you are asked to push directly. This rule stands over a one-off "push to
+  main"; treat that instruction as "get this ready to merge" and open the PR
+  instead. If it truly needs to bypass review, the repository owner can merge
+  their own PR in seconds.
+- **The point is the trace.** A commit message records what changed. A pull
+  request records that the change was proposed before it landed, what CI said
+  about it at the time, and leaves somewhere to ask a question about it
+  afterwards. A commit pushed straight to `main` has none of that, and it
+  cannot be added retroactively.
+- This applies to a one-line change and to docs-only changes, not just to code.
+- CI runs on pull requests as well as on pushes to `main`, so going through a
+  PR puts the compile, lint and `pip-audit` gate *before* the merge rather than
+  after it.
+
 ## Security & Privacy
 
 Guidance for keeping this repo's security posture intact as it grows.
