@@ -166,3 +166,60 @@ against the current code rather than assuming it still holds:
   httpOnly cookie. Accepted tradeoff, not touched.
 - No new CVEs, no new Critical/High findings, no regressions in any
   previously-closed item.
+
+### Re-audit (2026-09-05, branch `claude/security-audit-rerun-buf4bb`)
+
+Scheduled re-run. The tree was byte-identical to the previous pass (only the
+merge commit for #18 had landed), so nothing here is a regression — the two
+Medium findings are things the earlier two passes looked past. Full report:
+https://claude.ai/code/artifact/77606ad7-7172-4fb3-a2e1-75421decdf43
+
+Re-verified and still holding: auth decorators on all 45 routes; read scoping
+via `_visibility_clause` / `_can_view_user`; `FIELD_LIMITS` / `clean_text`;
+`_csv_safe`; `escapeHtml` on every server-supplied DOM write; CSP and headers
+in `nginx.conf`; non-root containers; `_load_secret_key` /
+`_REJECTED_SECRET_KEYS`; parameterised SQL throughout; no `verify=False`
+anywhere; no agent-directive files; no secrets across all 63 commits;
+`pip-audit --strict` clean on both manifests.
+
+Confirmed by test rather than by reading: a tray API key issued to a group
+admin is still refused by `add_group_member`, so the "deny keys by default"
+design held under an attack it was not written for.
+
+New findings, none Critical or High:
+
+- **Medium, open** — `group_admin` is not actually a group-scoped role.
+  `add_group_member` (`app.py:1270`) accepts any `user_id` with no consent
+  step and no check that the target is already visible to the caller, and
+  `/api/meta/users` hands group admins the full directory. Because
+  `_group_admin_member_ids` derives `_may_act_for` and the visibility helpers
+  from that self-controlled set, one POST converts any account on the instance
+  into one whose laps the caller can read, reassign and delete. Reproduced
+  end-to-end. A plain member gets 403 and an API key is refused, so the bound
+  is real — it is just self-serve. **Needs a product decision**: either route
+  direct adds through the existing invite flow, or state plainly here that
+  `group_admin` is an instance-wide data role. Do not leave the docs claiming
+  a boundary that is not enforced.
+- **Medium, open** — `.gitignore` has no `.env` rule, while `README.md:63` and
+  `docs/UPGRADING.md:61` instruct creating one containing `SECRET_KEY` inside
+  the clone. Verified: the file is untracked but not ignored, so `git add .`
+  stages a live signing key on a public repo. The previous audit checked that
+  no `.env` had been committed, not whether the next one would be. One-line
+  fix; also worth mirroring into both `.dockerignore` files.
+- **Low, open** — `remove_group_member` (`app.py:1323`) has no self-removal
+  case, so a member cannot leave a group they were added to.
+- **Low, open** — `index.html:8-9` loads Google Fonts from
+  `fonts.googleapis.com` / `fonts.gstatic.com`, and the CSP admits both. The
+  "Dependencies" note above claiming no third-party origins are trusted is
+  therefore wrong as written — either vendor the fonts or correct the claim.
+- **Low, open** — `tray-release.yml` sets `contents: write` at job level, so
+  pull-request runs carry a write-scoped token they never need. Fork PRs are
+  read-only regardless, so exploitability is low today.
+- **Low, open** — actions are pinned to mutable major tags rather than commit
+  SHAs. Deliberate per `dependabot.yml`, but undocumented here; weigh
+  `dorny/paths-filter` first as the only non-vendor action.
+
+Adjacent, not security: `app.js:349`/`:370` interpolate the avatar `initial`
+without `escapeHtml` (one character, self-only, cannot form a tag); and CI
+compiles on Python 3.12 while the image ships 3.14, with 14 calls to the
+deprecated `datetime.utcnow()` in `app.py`.
