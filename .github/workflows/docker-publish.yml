@@ -117,7 +117,7 @@ jobs:
         uses: docker/setup-qemu-action@v4
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Pull requests build but never push, so no credentials are needed
       # (and forks can run this workflow without access to secrets).
