@@ -1,6 +1,6 @@
 # ACE Tray — Windows Companion App
 
-> **Version 1.4.0** — [Technical Documentation](TECHNICAL.md)
+> **Version 1.5.0** — [Technical Documentation](TECHNICAL.md)
 
 A Windows system tray app that watches Assetto Corsa Evo for completed laps and automatically submits them to your [ACE Lap Tracker](../README.md) server. No manual entry needed during a session.
 
