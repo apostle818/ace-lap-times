@@ -263,6 +263,48 @@ towards their leaderboard entry and personal bests, not the uploader's.
 - [ ] Head-to-head delta tracking
 - [ ] Session grouping
 - [ ] Mobile PWA
+- [ ] *(optional)* Accurate track outlines, rendered from OpenStreetMap data
+- [ ] *(optional)* More car-class silhouettes, so fewer laps land on the placeholder
+- [ ] *(optional)* Tray-sourced artwork from the local Assetto Corsa install
+
+### On the optional thumbnail items
+
+The thumbnails in `frontend/assets/thumbs/` are hand-drawn glyphs on purpose —
+stylised, not survey-accurate, because an accurate circuit map is someone
+else's copyrighted work. Three ways to make them more lifelike, in ascending
+order of what they cost:
+
+**OpenStreetMap outlines.** Circuit centrelines are mapped in OSM as
+`highway=raceway`. Extracting and simplifying that geometry into a 48 × 32 SVG
+path at build time gives genuinely accurate layouts for any real-world circuit,
+rather than the ten drawn by hand today. A rendered map is a *Produced Work*
+under the ODbL, so the obligation is attribution only — no share-alike — which
+means a credit line and no change to the repo's licensing. Fictional and mod
+tracks stay on the placeholder.
+
+**More silhouettes.** There is no free, legal source of realistic per-model car
+artwork: press renders are copyrighted, badges are trademarks, and vehicle
+designs carry EU design rights. The honest ceiling is broader *class* coverage
+— LMP, touring, rally, kart, generic road car — so that most laps get something
+better than the grey placeholder. Cosmetic, no legal or security change.
+
+**Tray-sourced artwork.** Assetto Corsa ships exactly the right images on the
+player's own disk: `content/tracks/<id>/ui/outline.png` is an accurate outline
+of the specific layout variant a lap was set on, and `content/cars/<id>/ui/`
+covers cars, mods included. These cannot be vendored into this repository —
+they are Kunos' and the modders' work — so the only route is the tray reading
+them locally and uploading them to the operator's own instance. That is fine to
+*use*, but it opens the image upload path the Security & Privacy notes in
+`CLAUDE.md` deliberately leave closed. It is a real feature with real work
+attached: tray-scope key only, magic-byte validation, server-side re-encode to
+a fixed size, hard size and count caps, and no client-supplied filename ever
+reaching disk. Worth doing only if photo-accurate artwork matters more than
+keeping that surface shut.
+
+Independent of all three: the tray discards the raw content IDs, sending only a
+formatted display name (`ks_bmw_m4_gt3` becomes `Bmw M4 GT3`), so matching runs
+on prose. Carrying `track_id` and `car_id` through to the server would make
+matching reliable and give any of the above a stable key to work from.
 
 ## Contributing
 
