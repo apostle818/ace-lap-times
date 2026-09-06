@@ -1,6 +1,53 @@
 # Upgrading
 
-## Driver switching — the current release
+## Leaving groups & thumbnails — the current release
+
+Two things: anyone can now leave a group they are in, and track and car names
+carry a thumbnail.
+
+**Nothing to do.** No schema change, no configuration, no re-login — pull the
+new `backend` and `frontend` images and restart. The tray app is untouched by
+this release and stays at **1.5.0**; there is no tray update to install.
+
+### What is new
+
+- **Leave a group.** *My Profile → Groups → Leave*, on any group you are in.
+  A plain member has no Groups tab, so that is the entry point that matters;
+  group admins and superadmins also get a Leave Group card on the group's own
+  page. You stop seeing that group's laps and its members stop seeing yours —
+  nothing is deleted, and your own laps stay exactly where they are.
+- **Track and car thumbnails.** A small glyph next to each name on the
+  leaderboard, personal bests, lap history and the recent-laps list. The
+  artwork was drawn for this project and ships inside the frontend image, so
+  no CDN is contacted and the CSP is unchanged. Anything the bundled set does
+  not cover — which is most road cars — gets a neutral placeholder rather than
+  a wrong picture.
+
+### The one thing that can be refused
+
+A group's **last group admin cannot leave a group that still has members in
+it**. Promote somebody else to group admin first, then leave.
+
+The alternatives were worse. Auto-promoting whoever was left would hand
+group-admin authority — which carries write access over those members' laps —
+to a person who never asked for it, on the say-so of the one walking out.
+Leaving the group adminless orphans it: no description edits, no invites, no
+role changes, nobody but a superadmin able to help. So it asks you to hand
+over first. Leaving as the *last member* is fine — an empty group has nobody
+to strand.
+
+This applies to superadmins too when they are leaving a group themselves; they
+can always promote someone, or delete the group outright.
+
+### Rolling back
+
+Nothing was migrated, so pinning the previous image tags is enough. Anyone who
+already left a group stays left — that is a row deleted from `group_members`,
+which the old code reads the same way.
+
+---
+
+## Driver switching — an earlier release
 
 Laps can now be filed under a driver other than the one who uploaded them:
 a mis-attributed lap can be moved on the website, and the tray app can be

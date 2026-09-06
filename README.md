@@ -11,6 +11,7 @@ Built for sim racers who want to own their data without relying on third-party s
 - **User accounts** — password auth with JWT tokens, multiple drivers on one server
 - **API keys** — the tray app uploads with a revocable, upload-only key instead of your password
 - **Groups** — a privacy boundary, not just a label: you see your own laps and those of drivers you share a group with, nobody else's
+- **Track & car thumbnails** — a glyph beside every track and car name, drawn for this project and served from the app's own image, never a CDN
 - **Driver switching** — share a rig: pick who is in the seat from the tray, or move a mis-filed lap to the right driver on the website
 - **Leaderboard** — compare best times across drivers in your groups, filtered by track and car
 - **Personal bests** — track your fastest time per track/car combo
@@ -202,6 +203,13 @@ joins by opening the link. That is deliberate: a group is what the visibility
 and lap-attribution rules below are built on, so being added to one has to be
 something you agreed to, not something done to you.
 
+Getting out is yours to do alone: **any member can leave a group they are in**,
+from *My Profile → Groups → Leave*. Joining had to be consented to; leaving
+needs nobody's permission, and it can only ever narrow what you and your
+former co-members can see of each other. The one refusal is a group's last
+group admin walking out on a group that still has members in it — promote
+somebody first, so the group is not left with nobody who can manage it.
+
 ### Who a lap can be filed under
 
 Reading a lap and writing one in someone else's name are separate questions.
@@ -251,7 +259,7 @@ towards their leaderboard entry and personal bests, not the uploader's.
 - [x] Windows .exe built in CI
 - [x] Reassign a lap to another driver, on the web and from the tray
 - [ ] Public site with MFA & group/team setup
-- [ ] Track/car thumbnails
+- [x] Track/car thumbnails
 - [ ] Head-to-head delta tracking
 - [ ] Session grouping
 - [ ] Mobile PWA

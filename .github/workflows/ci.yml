@@ -52,6 +52,35 @@ jobs:
           pip-audit --strict --requirement ace-laptimes/backend/requirements.txt
           pip-audit --strict --requirement ace-tray/requirements.txt
 
+      # app.js builds every thumbnail URL from a fixed table of slugs, so a
+      # typo there ships a broken image with no other warning. Check both
+      # directions: every slug the tables name has a file, and every file is
+      # named by the tables.
+      - name: Check thumbnail assets
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys
+          js = pathlib.Path('ace-laptimes/frontend/app.js').read_text()
+          thumbs = pathlib.Path('ace-laptimes/frontend/assets/thumbs')
+          referenced = set()
+          for table in ('TRACK_THUMBS', 'CAR_THUMBS'):
+              m = re.search(rf'const {table} = \[(.*?)\];', js, re.S)
+              if not m:
+                  sys.exit(f'{table} not found in app.js')
+              referenced |= set(re.findall(r"'((?:track|car)-[a-z0-9-]+)'", m.group(1)))
+          referenced |= {'track-unknown', 'car-unknown'}   # the placeholders
+          on_disk = {p.stem for p in thumbs.glob('*.svg')}
+          missing = sorted(referenced - on_disk)
+          orphaned = sorted(on_disk - referenced)
+          for name in missing:
+              print(f'FAIL app.js points at {name}.svg, which does not exist')
+          for name in orphaned:
+              print(f'FAIL {name}.svg is not named by any lookup table in app.js')
+          if missing or orphaned:
+              sys.exit(1)
+          print(f'ok   {len(referenced)} thumbnails referenced and present')
+          PY
+
       - name: Validate workflow YAML
         run: |
           python - <<'PY'

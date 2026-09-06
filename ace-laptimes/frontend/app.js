@@ -75,6 +75,79 @@ function escapeHtml(str) { return String(str ?? '').replace(/[&<>"']/g, c => HTM
 
 function userRole() { return state.user?.role || 'member'; }
 
+// ─── Track & car thumbnails ─────────────────────────────────────────
+//
+// The artwork ships inside the frontend image (frontend/assets/thumbs, drawn
+// from scratch for this repo - see the README there) and is served from our
+// own origin, so img-src in nginx.conf stays 'self' with nothing third-party
+// trusted, and there is no upload path to secure.
+//
+// Track and car names are free text that arrived from an ACE log, so they
+// never reach the URL. A name is normalised to a slug, the slug is matched
+// against the constant tables below, and only the table's *value* - a fixed
+// [a-z0-9-] literal - is interpolated into src. A track named "../../etc" or
+// `x" onerror="..."` therefore cannot point the tag anywhere; it just misses
+// every entry and gets the placeholder.
+
+function thumbSlug(name) {
+  return String(name ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // Nürburgring -> Nurburgring
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// Ordered [token, file]. The token is matched as a whole run of slug words,
+// so 'spa' hits "Spa-Francorchamps" but not "Spain", and 'f3' does not hit
+// "Ferrari F355". First match wins, so the more specific entry goes first.
+const TRACK_THUMBS = [
+  ['nordschleife',    'track-nordschleife'],
+  ['nurburgring',     'track-nurburgring'],
+  ['monza',           'track-monza'],
+  ['imola',           'track-imola'],
+  ['brands-hatch',    'track-brands-hatch'],
+  ['laguna-seca',     'track-laguna-seca'],
+  ['mount-panorama',  'track-mount-panorama'],
+  ['bathurst',        'track-mount-panorama'],
+  ['suzuka',          'track-suzuka'],
+  ['silverstone',     'track-silverstone'],
+  ['spa',             'track-spa'],
+];
+
+// Cars are keyed on class, not model: the tray turns a car id like
+// ks_bmw_m4_gt3 into "Bmw M4 GT3", so the class token survives into the name
+// while the model does not generalise. Everything else - which is most road
+// cars - gets the neutral placeholder rather than a silhouette that would be
+// claiming something about a car we have no artwork for.
+const CAR_THUMBS = [
+  ['gt3',     'car-gt3'],
+  ['gt2',     'car-gt3'],
+  ['gte',     'car-gt3'],
+  ['gt4',     'car-gt4'],
+  ['formula', 'car-formula'],
+  ['f4',      'car-formula'],
+  ['f3',      'car-formula'],
+  ['f2',      'car-formula'],
+  ['f1',      'car-formula'],
+];
+
+function thumbFile(table, name, placeholder) {
+  const slug = `-${thumbSlug(name)}-`;
+  for (const [token, file] of table) {
+    if (slug.includes(`-${token}-`)) return file;
+  }
+  return placeholder;
+}
+
+// A thumbnail plus the name it belongs to. The image is decorative - the name
+// sits right beside it - so alt is empty and it stays out of the a11y tree.
+function thumbCell(kind, name) {
+  const file = kind === 'track'
+    ? thumbFile(TRACK_THUMBS, name, 'track-unknown')
+    : thumbFile(CAR_THUMBS, name, 'car-unknown');
+  return `<span class="thumb-cell"><img class="thumb" src="/assets/thumbs/${file}.svg" alt="" width="36" height="24" loading="lazy"><span class="thumb-label">${escapeHtml(name)}</span></span>`;
+}
+
 // A lap can be moved when the account may file laps under more than one name
 // and already has rights over the driver it currently belongs to. That mirrors
 // the server rule exactly, so the picker never offers a move it would refuse.
@@ -818,6 +891,43 @@ function bindPageEvents() {
       }
     });
   });
+  // Leaving a group. Offered in two places, because they reach different
+  // people: the group detail page (only group admins and superadmins have a
+  // Groups nav entry) and each chip in "Groups" on My Profile, which is where
+  // a plain member - the one who most needs a way out - can actually get to.
+  async function leaveGroup(gid, name) {
+    // confirm() takes plain text, not markup, so nothing here is parsed as
+    // HTML and the group name goes in as-is on purpose.
+    if (!confirm(`Leave ${name}?\n\nYou will no longer see this group's lap `
+               + `times, and its members will no longer see yours. Your own `
+               + `laps are not deleted.`)) return;
+    const res = await apiFetch(`/groups/${gid}/members/${state.user?.id}`, { method: 'DELETE' });
+    if (!res) return;
+    if (res.ok) {
+      // The group may now be invisible to us, so drop any detail view rather
+      // than re-fetching one that would 404. loadCurrentUser() refreshes
+      // state.user.groups, which isGroupAdmin() and the nav read - leaving
+      // your last admin role has to take the Groups tab away with it.
+      state.selectedGroupId = null; state.groupDetail = null; state.groupInvites = [];
+      await loadCurrentUser();
+      if (state.page === 'my-profile') await loadMyProfile(); else await loadGroups();
+      render();
+      return;
+    }
+    // The server refuses when you are the group's last group admin; show its
+    // wording rather than second-guessing it.
+    const data = await res.json().catch(() => ({}));
+    const msgDiv = document.getElementById('leave-group-msg');
+    if (msgDiv) msgDiv.innerHTML = `<div class="error-msg">${escapeHtml(data.error||'Could not leave that group')}</div>`;
+  }
+
+  document.getElementById('leave-group-btn')?.addEventListener('click', function () {
+    leaveGroup(this.dataset.gid, state.groupDetail?.name || 'this group');
+  });
+  document.querySelectorAll('.leave-group-chip').forEach(btn => {
+    btn.addEventListener('click', () => leaveGroup(btn.dataset.gid, btn.dataset.gname || 'this group'));
+  });
+
   document.getElementById('copy-invite-btn')?.addEventListener('click', () => {
     const val = document.getElementById('invite-link-display').value;
     navigator.clipboard.writeText(val).then(() => {
@@ -892,8 +1002,8 @@ function renderRecordPage() {
           <tbody>
             ${state.laptimes.slice(0,5).map(lap=>`
               <tr>
-                <td data-label="Track">${escapeHtml(lap.track)}</td>
-                <td data-label="Car">${escapeHtml(lap.car)}</td>
+                <td data-label="Track">${thumbCell('track', lap.track)}</td>
+                <td data-label="Car">${thumbCell('car', lap.car)}</td>
                 <td data-label="Time" class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
                 <td data-label="Weather"><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
                 <td data-label="Date" style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleDateString()}</td>
@@ -966,8 +1076,8 @@ function renderHistoryPage() {
                 : `<span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(lap.display_name)}</span>`;
               return `<tr>
                 <td data-label="Driver">${driverCell}</td>
-                <td data-label="Track">${escapeHtml(lap.track)}</td>
-                <td data-label="Car">${escapeHtml(lap.car)}</td>
+                <td data-label="Track">${thumbCell('track', lap.track)}</td>
+                <td data-label="Car">${thumbCell('car', lap.car)}</td>
                 <td data-label="Time" class="laptime-cell">${msToLaptime(lap.laptime_ms)}</td>
                 <td data-label="Weather"><span class="weather-badge">${WEATHER_ICONS[lap.weather]||''} ${escapeHtml(lap.weather)}</span></td>
                 <td data-label="Date" style="color:var(--text-secondary);font-size:12px;">${new Date(lap.recorded_at).toLocaleString()}</td>
@@ -999,8 +1109,8 @@ function renderLeaderboardPage() {
               return `<tr>
                 <td data-label="#"><span class="lb-position ${posClass}">${i+1}</span></td>
                 <td data-label="Driver"><span class="driver-pill"><span class="driver-dot" style="background:${getDriverColor(idx)}"></span> ${escapeHtml(row.display_name)}</span></td>
-                <td data-label="Track">${escapeHtml(row.track)}</td>
-                <td data-label="Car">${escapeHtml(row.car)}</td>
+                <td data-label="Track">${thumbCell('track', row.track)}</td>
+                <td data-label="Car">${thumbCell('car', row.car)}</td>
                 <td data-label="Best Time" class="laptime-cell">${msToLaptime(row.best_time)}</td>
                 <td data-label="Laps" style="color:var(--text-secondary)">${row.total_laps}</td>
                 <td data-label="Gap" class="lb-diff">${gap}</td>
@@ -1040,8 +1150,8 @@ function renderPBPage() {
           <tbody>
             ${paged.map(r=>`
               <tr>
-                <td data-label="Track">${escapeHtml(r.track)}</td>
-                <td data-label="Car">${escapeHtml(r.car)}</td>
+                <td data-label="Track">${thumbCell('track', r.track)}</td>
+                <td data-label="Car">${thumbCell('car', r.car)}</td>
                 <td data-label="Best Time" class="laptime-cell">${msToLaptime(r.best_time)} <span class="pb-badge">PB</span></td>
                 <td data-label="Attempts" style="color:var(--text-secondary)">${r.attempts}</td>
               </tr>`).join('')}
@@ -1169,8 +1279,15 @@ function renderProfilePage() {
             ${groups.map(g=>`
               <div style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 14px;font-size:13px;display:flex;align-items:center;gap:8px;">
                 <strong>${escapeHtml(g.name)}</strong> ${roleBadgeHtml(g.group_role)}
+                <button class="btn btn-sm btn-ghost leave-group-chip" data-gid="${g.id}" data-gname="${escapeHtml(g.name)}"
+                        title="Leave this group" style="padding:2px 8px;font-size:12px;">Leave</button>
               </div>`).join('')}
-          </div>`}
+          </div>
+          <p style="color:var(--text-muted);font-size:12px;margin-top:12px;">
+            Leaving a group stops you seeing its members' laps and stops them
+            seeing yours. Your own laps stay where they are.
+          </p>
+          <div id="leave-group-msg" style="margin-top:10px;"></div>`}
     </div>
     ${renderApiKeysCard()}`;
 }
@@ -1430,6 +1547,13 @@ function renderGroupDetail() {
   const myMembership = group.members.find(m=>m.id===state.user?.id);
   const myGroupRole = myMembership?.group_role || (isSuperAdmin?'group_admin':'');
   const canManage = isSuperAdmin || myGroupRole==='group_admin';
+  // Mirrors the server's refusal in remove_group_member: the last group admin
+  // of a group that still has other members cannot leave it. Shown as a
+  // disabled button with the reason rather than hidden, so it is obvious what
+  // to do about it.
+  const lastAdminHere = myMembership?.group_role==='group_admin'
+    && group.members.length > 1
+    && !group.members.some(m=>m.id!==state.user?.id && m.group_role==='group_admin');
   const memberIds = new Set(group.members.map(m=>m.id));
   const nonMembers = state.users.filter(u=>!memberIds.has(u.id));
 
@@ -1566,6 +1690,20 @@ function renderGroupDetail() {
           </tbody>
         </table>
       </div>` : ''}
+    </div>`:''}
+    ${myMembership?`
+    <div class="card fade-in">
+      <div class="card-header"><span class="card-title">Leave Group</span></div>
+      <p style="color:var(--text-secondary);font-size:13px;margin-bottom:14px;">
+        You will stop seeing this group's laps, and its members will stop
+        seeing yours. Your own laps are not deleted, and you can be invited
+        back.
+        ${lastAdminHere?`<br><strong>You are this group's only group admin.</strong>
+        Promote another member to group admin first, or the group is left with
+        nobody who can manage it.`:''}
+      </p>
+      <button class="btn btn-danger" id="leave-group-btn" data-gid="${group.id}" ${lastAdminHere?'disabled':''}>Leave Group</button>
+      <div id="leave-group-msg" style="margin-top:10px;"></div>
     </div>`:''}`;
 }
 

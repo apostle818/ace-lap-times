@@ -1329,20 +1329,76 @@ def update_group_member(group_id, user_id):
 @app.route("/api/groups/<int:group_id>/members/<int:user_id>", methods=["DELETE"])
 @token_required
 def remove_group_member(group_id, user_id):
+    """
+    Take someone out of a group: a superadmin for anyone, a group admin of
+    this group for its members, or a member leaving under their own steam.
+
+    Leaving is the one case that needs no authority over the target, and for
+    a structural reason rather than a lenient one. _visible_user_ids() and
+    _group_admin_member_ids() are both computed from group_members, so
+    deleting your own row can only ever *shrink* those sets - yours, and
+    every co-member's view of you. There is no arrangement of groups in which
+    leaving one hands the leaver, or anybody else, sight of or authority over
+    an account they did not already have. That is the opposite direction from
+    add_group_member(), which is superadmin-only precisely because it grows
+    them.
+
+    The self case is pinned to g.current_user_id, which comes from the token
+    and not from the request, so pointing the path's user_id at someone else
+    does not reach it: a plain member who tries falls through to the 403.
+    An API key cannot reach this route at all - @token_required, not
+    @token_or_key_required - so a tray key still cannot rearrange anyone's
+    groups.
+    """
     db = get_db()
-    if g.current_user_role != "superadmin":
+    leaving_self = user_id == g.current_user_id
+    if g.current_user_role != "superadmin" and not leaving_self:
         my_m = db.execute(
             "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
             (group_id, g.current_user_id)
         ).fetchone()
         if not my_m or my_m["role"] != "group_admin":
             return jsonify({"error": "Permission denied"}), 403
+
+    membership = db.execute(
+        "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+        (group_id, user_id)
+    ).fetchone()
+    if not membership:
+        return jsonify({"error": "That user is not a member of this group"}), 404
+
+    # The last group admin may not walk out of a group that still has people
+    # in it. Auto-promoting whoever is left would hand group-admin authority -
+    # which _may_act_for() turns into write access over those members' laps -
+    # to somebody who never asked for it, on the say-so of the person leaving:
+    # the same "authority granted without the target's consent" shape that
+    # add_group_member() was locked down for. Leaving the group adminless
+    # instead orphans it - no description edits, no invites, no role changes,
+    # and only a superadmin able to help. So neither: the leaver hands over
+    # first, deliberately, and only then leaves.
+    #
+    # Leaving as the *only* member is allowed: an empty group has nobody to
+    # orphan, and a superadmin can delete or repopulate it.
+    if leaving_self and membership["role"] == "group_admin":
+        counts = db.execute(
+            """SELECT COUNT(*) AS others,
+                      SUM(CASE WHEN role = 'group_admin' THEN 1 ELSE 0 END) AS other_admins
+               FROM group_members WHERE group_id = ? AND user_id != ?""",
+            (group_id, user_id)
+        ).fetchone()
+        if counts["others"] and not counts["other_admins"]:
+            return jsonify({
+                "error": "You are this group's only group admin. Promote "
+                         "another member to group admin before you leave, so "
+                         "the group is not left without one."
+            }), 409
+
     db.execute(
         "DELETE FROM group_members WHERE group_id = ? AND user_id = ?",
         (group_id, user_id)
     )
     db.commit()
-    return jsonify({"message": "Removed"})
+    return jsonify({"message": "Left group" if leaving_self else "Removed"})
 
 # ─── Invite routes ───────────────────────────────────────────────────
 

@@ -55,6 +55,17 @@ groups-as-privacy-boundary, CSV injection, strict CSP, non-root containers,
   `_csv_safe` (or equivalent) — Excel/Sheets formula injection via a leading
   `=`, `+`, `-`, `@`, tab, or CR is the concrete threat model already
   handled for the existing export columns.
+- **Bundled frontend artwork lives in `ace-laptimes/frontend/assets/`** and is
+  referenced only through constant lookup tables in `app.js` — a track or car
+  name that came from the server never reaches an asset URL, and anything
+  unrecognised falls through to a placeholder. Keep it that way: interpolating
+  a server-supplied name into a `src` reintroduces both path traversal and an
+  attribute-injection surface. There is deliberately **no image upload path**
+  (content-type sniffing plus disk fill against a single unquota'd SQLite
+  volume), and `img-src` in `nginx.conf` must stay `'self' data:` — vendor new
+  artwork into the image the way `frontend/Dockerfile` does rather than adding
+  a remote origin. CI (`.github/workflows/ci.yml`) checks the tables and the
+  files on disk agree in both directions.
 - **New text ever rendered into the DOM in `app.js`** must go through
   `escapeHtml`. The CSP (`script-src 'self'`, no `unsafe-inline`) is a
   second layer, not a substitute for escaping — don't rely on it alone.
@@ -244,8 +255,17 @@ New findings, none Critical or High:
   `!.env.example` escape hatch, verified against the exact command the README
   gives, from both the repo root and `ace-laptimes/`. The backend
   `.dockerignore` already had `.env`; the frontend and nginx ones now do too.
-- **Low, open** — `remove_group_member` (`app.py:1331`) has no self-removal
-  case, so a member cannot leave a group they were added to.
+- **Low, fixed** — `remove_group_member` (`app.py:1331`) had no self-removal
+  case, so a member could not leave a group they were added to. **Resolved**
+  in v1.6.0: a caller may always remove *themselves*, pinned to
+  `g.current_user_id` from the token so the path's `user_id` cannot be aimed
+  at anyone else. This is the safe direction structurally, not by policy —
+  `_visible_user_ids` and `_group_admin_member_ids` are both computed from
+  `group_members`, so deleting your own row can only shrink them. The last
+  group admin of a group that still has members is refused with a 409 rather
+  than auto-promoting a replacement (which would grant `_may_act_for`
+  authority to somebody who never consented — the same shape as the
+  `add_group_member` finding above) or leaving the group orphaned.
 - **Low, open** — `index.html:8-9` loads Google Fonts from
   `fonts.googleapis.com` / `fonts.gstatic.com`, and the CSP admits both. The
   "Dependencies" note above claiming no third-party origins are trusted is
