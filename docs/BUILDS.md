@@ -92,3 +92,13 @@ packages the Windows tray app with PyInstaller. On a `v*` tag it attaches
 `ACELapTracker.exe` to the GitHub release; on pull requests it uploads the
 exe as a workflow artifact. Users no longer need Python installed —
 `start.bat` remains for running from source.
+
+Because that happens on **every** version tag — whether or not the tagged
+commit touched `ace-tray/` — the tray's own version has to be bumped before the
+tag is cut, for the same "a version is a coherent set" reason the image builds
+follow above. Bump `APP_VERSION` in `ace-tray/ace_tray.py` plus the version line
+at the top of `ace-tray/README.md` and `ace-tray/TECHNICAL.md`, in the change
+that goes out with the release. Skipping it because "no tray code changed"
+ships an exe under `vX.Y.Z` that reports the previous version in its window, its
+`User-Agent`, and the `app_version` it heartbeats — which is what
+*Admin → Connected Clients* displays.

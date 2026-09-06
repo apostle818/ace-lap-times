@@ -115,6 +115,42 @@ groups-as-privacy-boundary, CSV injection, strict CSP, non-root containers,
   needs hardening later, look at Windows Credential Manager via `keyring`
   before rolling anything custom.
 
+### Cutting a release — bump the tray every time
+
+**`ace-tray/` gets a version bump on every release, even when no tray code
+changed.** `.github/workflows/tray-release.yml` fires on every `v*` tag and
+attaches a freshly built `ACELapTracker.exe` to that release regardless of what
+the diff touched — so a release always ships a tray binary, and that binary
+must say it is the version on the tin.
+
+Bump all three, in the change that goes out with the release, *before* the tag
+is cut:
+
+- `ace-tray/ace_tray.py` — `APP_VERSION`
+- `ace-tray/README.md` — the `> **Version X.Y.Z**` line near the top
+- `ace-tray/TECHNICAL.md` — the same line
+
+Do **not** reason "the tray isn't affected by this change, so leave its version
+alone". That is locally sensible and produces a release whose `.exe` reports the
+*previous* version in its own window, in its `User-Agent`, and in the
+`app_version` it heartbeats to `/api/client/heartbeat` — which is what an admin
+reads in *Admin → Connected Clients*. The version number is about which release
+the binary came from, not about whether its source moved.
+
+This has drifted twice, both times for that reason, so the tray version now
+trails the repo tag:
+
+| tag | tray `APP_VERSION` in the tagged tree |
+|---|---|
+| `v1.2.0` – `v1.4.0` | matched |
+| `v1.5.0` | `1.4.0` — the bump landed *after* the tag |
+| `v1.6.0` | `1.5.0` — judged "tray unaffected", but the tag built an exe anyway |
+
+The next release closes it by jumping the tray straight to that release's
+number. Don't try to catch up through the skipped versions, and don't re-tag a
+published release to fix an old one — the exe is already downloadable under
+that tag.
+
 ### Before deploying, not just before committing
 
 - `SECRET_KEY` must be freshly generated per instance (`openssl rand -hex
