@@ -4,6 +4,12 @@ WORKDIR /app
 
 RUN npm install -g serve
 
+# The build context carries the app plus assets/thumbs — the track and car
+# thumbnails, drawn for this repo (see assets/thumbs/README.md). They ship in
+# the image and are served same-origin like everything else here, so nothing
+# is fetched at page load and img-src in nginx.conf stays 'self' with no
+# remote origin. Same reasoning as the Chart.js vendoring below, minus the
+# download: these were never anybody else's to fetch.
 COPY . .
 
 # Chart.js is served from this image rather than a CDN. Nothing third-party

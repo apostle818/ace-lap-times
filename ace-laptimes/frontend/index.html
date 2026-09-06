@@ -179,6 +179,10 @@ body {
 .btn-ghost:hover { color: var(--accent); }
 .btn-danger { background: var(--accent-soft); color: var(--accent); border: 1px solid rgba(230,57,70,0.3); }
 .btn-danger:hover { background: var(--accent); color: white; }
+/* There was no generic disabled rule, so a disabled .btn still looked and
+   hovered like a live one (the members pager, and now Leave Group when you
+   are the last group admin). pointer-events kills the hover state too. */
+.btn:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 
 .data-table { width: 100%; border-collapse: collapse; }
@@ -189,6 +193,11 @@ body {
 .pb-badge { display: inline-block; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; background: var(--green-soft); color: var(--green); }
 .weather-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; border-radius: 4px; background: var(--bg-input); color: var(--text-secondary); }
 .driver-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 500; }
+/* Track/car thumbnails. The artwork is vendored into the frontend image
+   (assets/thumbs) and served same-origin, so img-src stays 'self'. */
+.thumb-cell { display: inline-flex; align-items: center; gap: 9px; min-width: 0; max-width: 100%; }
+.thumb { width: 36px; height: 24px; border-radius: 5px; flex-shrink: 0; display: block; }
+.thumb-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .driver-dot { width: 8px; height: 8px; border-radius: 50%; }
 .delete-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 8px; border-radius: 4px; transition: all 0.15s; font-size: 16px; display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; }
 .delete-btn:hover { color: var(--accent); background: var(--accent-soft); }
