@@ -1,6 +1,6 @@
 # ACE Tray — Technical Documentation
 
-> **Version 1.4.0** — [User Guide](README.md)
+> **Version 1.5.0** — [User Guide](README.md)
 
 This document covers the internal architecture, log parsing logic, configuration storage, and extension points for the tray app.
 
