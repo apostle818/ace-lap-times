@@ -302,18 +302,117 @@ New findings, none Critical or High:
   than auto-promoting a replacement (which would grant `_may_act_for`
   authority to somebody who never consented — the same shape as the
   `add_group_member` finding above) or leaving the group orphaned.
-- **Low, open** — `index.html:8-9` loads Google Fonts from
+- **Low, fixed 2026-09-07** — `index.html:8-9` loads Google Fonts from
   `fonts.googleapis.com` / `fonts.gstatic.com`, and the CSP admits both. The
   "Dependencies" note above claiming no third-party origins are trusted is
   therefore wrong as written — either vendor the fonts or correct the claim.
-- **Low, open** — `tray-release.yml` sets `contents: write` at job level, so
-  pull-request runs carry a write-scoped token they never need. Fork PRs are
-  read-only regardless, so exploitability is low today.
+  See the 2026-09-07 entry below.
+- **Low, fixed 2026-09-07** — `tray-release.yml` sets `contents: write` at
+  job level, so pull-request runs carry a write-scoped token they never need.
+  Fork PRs are read-only regardless, so exploitability is low today. See the
+  2026-09-07 entry below.
 - **Low, open** — actions are pinned to mutable major tags rather than commit
   SHAs. Deliberate per `dependabot.yml`, but undocumented here; weigh
   `dorny/paths-filter` first as the only non-vendor action.
 
-Adjacent, not security: `app.js:349`/`:370` interpolate the avatar `initial`
+Adjacent, not security: `app.js:422`/`:443` interpolate the avatar `initial`
 without `escapeHtml` (one character, self-only, cannot form a tag); and CI
 compiles on Python 3.12 while the image ships 3.14, with 14 calls to the
 deprecated `datetime.utcnow()` in `app.py`.
+
+### Re-audit (2026-09-07, branch `claude/focused-goldberg-q668nj`)
+
+Scheduled re-run, after the thumbnails/self-leave PR (#25) had landed on
+`main` (81 commits total). `pip-audit --strict` re-run against both
+`requirements.txt` files with the exact CI invocation: **no known
+vulnerabilities** in either (`flask` 3.1.3, `flask-limiter` 4.1.1, `gunicorn`
+26.2.0, `bcrypt` 5.0.0, `PyJWT` 2.13.0; `PyQt6` 6.11.0, `requests` 2.34.2 —
+none of these pins have moved since the 2026-09-05 pass, and none have a
+new advisory).
+
+Re-verified and still holding, checked directly against the current code
+rather than assumed: all 45 `@app.route` declarations carry an explicit auth
+decorator or are one of the four intentionally-public ones
+(`/api/auth/register`, `/api/auth/login` — both rate-limited,
+`/api/invites/<token>` GET — rate-limited and reveals nothing on a spent
+link, `/api/health` — no sensitive data); `_visibility_clause`/
+`_can_view_user` unchanged and still the only path lap-data reads go
+through; `FIELD_LIMITS`/`clean_text` cover all 16 call sites and no new
+free-text field was added outside it; `_csv_safe` wraps every text column
+in `export_csv`; every `innerHTML` write in `app.js` is either a fixed
+string, a full-page `render*Page()` template, or wrapped in `escapeHtml`
+for anything server-supplied; `add_group_member` is still
+`@superadmin_required` (not regressed back to a group-admin-writable
+route); `.gitignore` still ignores `.env`/`.env.*` with the `!.env.example`
+escape hatch; both Dockerfiles are still non-root (backend via `gosu` in
+`docker-entrypoint.sh`, frontend via `USER node`, confirmed by inspection
+of both files — no Docker daemon was available in this pass to do a build
+smoke-test, same limitation as 2026-08-31's follow-up); no CORS layer
+anywhere (`grep` for `cors`/`Access-Control-Allow` across `app.py` and
+`nginx.conf` — nothing); `_load_secret_key`/`_REJECTED_SECRET_KEYS`
+unchanged; no `verify=False` and no string-formatted SQL beyond the
+already-parameterised `_visibility_clause` fragment. `git log -p`/`-S`
+re-run across the full history (all 81 commits, including everything since
+the 2026-09-05 pass) for the same secret patterns, plus a name-based scan
+for any committed `.env`/key/credential file — nothing found beyond the
+already-known rejected `SECRET_KEY` placeholders. No `AGENTS.md` or similar
+file anywhere, and no code comment, README, or workflow content that reads
+as an attempt to redirect an agent's behavior — none found, same as every
+prior pass.
+
+Both Low findings left open on 2026-09-05 are fixed in this pass:
+
+- **Low, fixed** — `index.html` loaded Outfit and JetBrains Mono from
+  `fonts.googleapis.com`/`fonts.gstatic.com`, the one third-party origin the
+  CSP still had to admit (`style-src`/`font-src` both carried the two Google
+  hosts). Vendored instead, the same way Chart.js already is: verified
+  those weights actually exist locally in the `@fontsource/outfit@5.3.0`
+  and `@fontsource/jetbrains-mono@5.3.0` npm packages (checked the extracted
+  package contents directly — the exact weight sets, Outfit
+  300/400/500/600/700/800/900 and JetBrains Mono 400/500/600/700, match the
+  old Google Fonts URL's `wght@` list one-for-one) before wiring them into
+  `frontend/Dockerfile`, mirroring the existing `chart.js` vendoring pattern
+  (fetched at build time from npm, copied into `vendor/`, `node_modules`
+  discarded, with an existence check per weight so a future `@fontsource`
+  layout change fails the build with a readable message instead of shipping
+  a missing font). Only the `latin` subset is pulled, since the UI is
+  English-only — the `latin-ext`/cyrillic/vietnamese/... subsets Google's own
+  CSS API would otherwise also serve are not needed. `index.html` now links
+  a single local `/vendor/fonts/fonts.css`, and `nginx.conf`'s CSP no longer
+  carves out either Google host: `style-src` is `'self' 'unsafe-inline'` and
+  `font-src` is `'self'`, both origins now genuinely trusting nothing outside
+  the image. **Not verified against a real browser render** — no Docker
+  daemon was available in this pass, so the npm package extraction was
+  checked by hand (file listing, weight coverage, and the unmodified
+  `@font-face`/`url()` CSS each package ships) rather than by an actual
+  `docker build` + page load. Re-verify with a real build before relying on
+  this if `@fontsource`'s package layout is suspected to have changed.
+- **Low, fixed** — `tray-release.yml` ran the whole job, including every
+  pull-request build, with `contents: write` at job level, even though only
+  the tag-push "Attach to release" step ever used it. Split into two jobs:
+  `build` (Windows, runs PyInstaller, uploads a workflow artifact, holds only
+  `contents: read`) and a new `release` job (Linux, gated
+  `if: startsWith(github.ref, 'refs/tags/v')`, `needs: build`, downloads the
+  artifact and runs the `gh release` step) that alone holds
+  `contents: write`. A pull request — including one from a fork — now never
+  has a write-scoped token minted for this workflow at all. Validated with
+  the same YAML-parse check CI runs (`.github/workflows/*.yml` all parse);
+  the actual GitHub-hosted run was not exercised (no way to trigger Actions
+  from this environment), so watch the first real PR run of this workflow
+  after merge.
+
+New findings, both Low, both left open — no human decision needed yet, just
+tracked:
+
+- **Low, open** — the split above adds `actions/download-artifact@v7` to
+  `release`, pinned to a mutable major tag like every other action in this
+  workflow. Same as the pre-existing "actions pinned to mutable major tags"
+  finding just above; not treated differently because it's new, since the
+  repo's own `dependabot.yml` already covers keeping these current.
+- **Low, open** — `actions are pinned to mutable major tags rather than
+  commit SHAs` (carried over, unchanged) still applies to every workflow
+  file, `tray-release.yml` included. Still deliberate per `dependabot.yml`;
+  still not touched here.
+
+No new CVEs, no new Critical/High findings, no regression in anything closed
+by an earlier pass.

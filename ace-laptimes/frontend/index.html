@@ -5,8 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ALT — Assetto Corsa Evo Lap Tracker</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23e63946'/><stop offset='1' stop-color='%23ff6b6b'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><g fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M12.5 4 H19.5'/><path d='M16 4 V9.4'/><path d='M22.6 9.4 L24.4 7.6'/><circle cx='16' cy='18' r='8.6'/><path d='M16 18 L19.6 14.4'/></g></svg>">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Outfit and JetBrains Mono are vendored into the image at build time
+     rather than pulled from fonts.googleapis.com/fonts.gstatic.com, so the
+     page loads no third-party origin at all and the CSP no longer needs to
+     carve out either host. See frontend/Dockerfile. -->
+<link rel="stylesheet" href="/vendor/fonts/fonts.css">
 <!-- Chart.js is vendored into the image at build time rather than pulled
      from a CDN, so the page loads no third-party script and the CSP can
      stay at script-src 'self'. See frontend/Dockerfile. -->

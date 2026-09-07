@@ -2,12 +2,18 @@ name: Build tray app
 
 # Packages the Windows tray app into a standalone .exe with PyInstaller.
 #
-#   tag v*        -> builds and attaches ACELapTracker.exe to the GitHub release
+#   tag v*        -> builds, then a second job attaches ACELapTracker.exe to
+#                    the GitHub release
 #   pull request  -> builds only, uploaded as a workflow artifact
 #   manual        -> workflow_dispatch, artifact only
 #
 # The exe bundles its own Python, so end users no longer need Python
 # installed to run the tray app (start.bat remains for running from source).
+#
+# Two jobs on purpose: `build` (Windows, to actually run PyInstaller) never
+# holds a write-scoped token, since it runs on every pull request; `release`
+# (Linux, it only shells out to `gh`) holds contents: write but is gated to
+# tag pushes, so that token is never minted for a PR run.
 
 on:
   push:
@@ -27,8 +33,12 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    # No contents: write here - this job runs on every pull request too
+    # (including, potentially, one from a fork), and it only ever builds and
+    # uploads a workflow artifact. Only the release job below, gated to tag
+    # pushes, needs write access to attach the exe to a GitHub release.
     permissions:
-      contents: write   # needed to attach the exe to a release
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -89,17 +99,33 @@ jobs:
           path: ace-tray/dist/ACELapTracker.exe
           if-no-files-found: error
 
+  # Separate job, gated to tag pushes only, so the contents: write token
+  # this needs (to attach the exe to a release) is never minted for a pull
+  # request or workflow_dispatch run - those stop at `build` above with a
+  # read-only token.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to attach the exe to a release
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ACELapTracker-exe
+          path: dist
+
       - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" ace-tray/dist/ACELapTracker.exe --clobber
+            gh release upload "$tag" dist/ACELapTracker.exe --clobber
           else
-            gh release create "$tag" ace-tray/dist/ACELapTracker.exe \
+            gh release create "$tag" dist/ACELapTracker.exe \
               --title "$tag" --generate-notes
           fi
