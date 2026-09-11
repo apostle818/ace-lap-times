@@ -416,3 +416,97 @@ tracked:
 
 No new CVEs, no new Critical/High findings, no regression in anything closed
 by an earlier pass.
+
+### Re-audit (2026-09-11, branch `claude/focused-goldberg-9t6vxp`)
+
+Scheduled re-run. `main` had not moved since the 2026-09-07 pass (this
+branch's `HEAD` is byte-identical to that pass's landing commit, `316c2de`,
+84 commits total), so every finding below is a re-verification against the
+same tree, not a check against new code — treat "unchanged" as "still true
+of the code that was already reviewed," not as an assumption.
+
+`pip-audit --strict` re-run against both `requirements.txt` files with the
+exact CI invocation: **no known vulnerabilities** in either. Pins have not
+moved since 2026-09-07: `flask` 3.1.3, `flask-limiter` 4.1.1, `gunicorn`
+26.2.0, `bcrypt` 5.0.0, `PyJWT` 2.13.0 (backend); `PyQt6` 6.11.0, `requests`
+2.34.2 (tray). `python -m compileall ace-laptimes/backend ace-tray` and
+`ruff check --select E9,F63,F7,F82,F401,F811,F841 --ignore E402` (the exact
+CI flags) both ran clean locally.
+
+Re-verified by reading the code directly, not by trusting the prior write-up:
+
+- All 45 `@app.route` declarations still carry an explicit auth decorator
+  immediately after the route (`token_required` / `token_or_key_required` /
+  `superadmin_required`, or a `@limiter.limit(...)` line ahead of one — traced
+  every case rather than assuming), except the same four intentionally-public
+  routes: `/api/auth/register` and `/api/auth/login` (both rate-limited),
+  `GET /api/invites/<token>` (rate-limited), and `/api/health`.
+- `_visibility_clause` / `_can_view_user` (`app.py:597-618`) are unchanged
+  and still the only path `export_csv`, `export_json`, `get_laptimes`,
+  `leaderboard`, `personal_bests` and `progress` read lap data through.
+  `_may_act_for` / `_group_admin_member_ids` / `_assignable_user_ids`
+  (`app.py:620-660`) are unchanged; `add_group_member` is still
+  `@superadmin_required`, not regressed back to a group-admin-writable route.
+- `FIELD_LIMITS` (`app.py:525-536`) still covers every key `clean_text` is
+  called with (16 call sites, re-counted); no free-text field was added
+  outside it.
+- `_csv_safe` (`app.py:1865-1872`) still wraps every text column written in
+  `export_csv` (driver, track, car, weather, notes, recorded_at) — read the
+  function body and every `writer.writerow` call, not just grepped for the
+  name.
+- Every `innerHTML` assignment in `app.js` (38 call sites, re-counted) is
+  still either a fixed string, a full `render*Page()` template call, or
+  wraps server/user-supplied text in `escapeHtml` (64 call sites). The one
+  known non-issue is unchanged: the sidebar/more-sheet avatar `initial`
+  (`app.js:397`, `state.user?.display_name?.charAt(0)`) still reaches
+  `innerHTML` unescaped, but it is a single character from `.charAt(0)` and
+  cannot form a tag — adjacent, not a finding, same as 2026-08-31/09-05/09-07.
+- `_load_secret_key` / `_REJECTED_SECRET_KEYS` (`app.py:30-60`) unchanged:
+  no fallback, placeholder values still rejected by name, 32-character
+  minimum still enforced. `docker-compose.yml` still uses
+  `${SECRET_KEY:?required...}` with no default.
+- No CORS middleware or `Access-Control-Allow-*` header anywhere in
+  `app.py` or `nginx.conf` (grepped both) — same as every prior pass.
+- Both Dockerfiles still drop to a non-root user: backend via `gosu` in
+  `docker-entrypoint.sh` (uid 1000, chowns `/app/data` before exec'ing as
+  `app`), frontend via `USER node`. Confirmed by reading both files; no
+  Docker daemon was available in this pass either, so this is inspection,
+  not a build smoke-test — same limitation as every prior pass.
+- `nginx.conf`'s CSP is unchanged: `script-src 'self'` with no
+  `unsafe-inline`/`unsafe-eval`, `style-src 'self' 'unsafe-inline'`,
+  `font-src 'self'`, `img-src 'self' data:`, `frame-ancestors 'none'`. No
+  `fonts.googleapis.com`/`fonts.gstatic.com` reference anywhere in
+  `nginx.conf` or `index.html` — the 2026-09-07 vendoring fix (`@fontsource`
+  files copied into `vendor/fonts/` at build time) is still in place and
+  `index.html` still links only the local `/vendor/fonts/fonts.css`.
+- `.github/workflows/tray-release.yml` still has the split job structure:
+  `build` (Windows, PyInstaller, `contents: read`, runs on every PR) and a
+  separate `release` job (Linux, `needs: build`,
+  `if: startsWith(github.ref, 'refs/tags/v')`, `contents: write`) that alone
+  holds the write-scoped token. All four workflow YAML files still parse.
+- `git log -p` / `-S` re-run across the full history (all 84 commits,
+  nothing new since 2026-09-07) for AWS-style keys, private-key headers,
+  hardcoded passwords/tokens, connection strings and committed `.env`/key/
+  cert files — nothing found beyond the already-known rejected `SECRET_KEY`
+  placeholders documented above. `.gitignore` still ignores `.env`/`.env.*`
+  with the `!.env.example` escape hatch.
+- No `AGENTS.md` or similar file anywhere in the repo (checked by filename
+  across the whole tree, not just the root), and a keyword scan
+  (`ignore previous instructions`, `you are now`, `disregard prior`,
+  `system prompt`) across `.py`/`.js`/`.md`/`.yml`/`.html` files found
+  nothing outside this file's own audit history describing that check.
+
+No new findings this pass, Critical/High/Medium/Low. Both previously-open
+Low items are unchanged and were not touched, per this pass's scope:
+
+- **Low, open, unchanged** — actions pinned to mutable major tags rather
+  than commit SHAs, across every workflow file. Deliberate per
+  `dependabot.yml`.
+- **Low, open, unchanged** — tray API key persisted via `QSettings` (Windows
+  registry, plaintext); mitigated server-side by `scope='tray'` /
+  `_acting_as_superadmin`.
+
+Not re-litigated: the tray-version-vs-tag table under "Cutting a release" —
+this pass is not a release, so `ace_tray.py` (`1.5.0`), `README.md` and
+`TECHNICAL.md` were only checked for internal consistency (all three agree)
+and left alone, per this task's own scope.
