@@ -510,3 +510,118 @@ Not re-litigated: the tray-version-vs-tag table under "Cutting a release" —
 this pass is not a release, so `ace_tray.py` (`1.5.0`), `README.md` and
 `TECHNICAL.md` were only checked for internal consistency (all three agree)
 and left alone, per this task's own scope.
+
+### Re-audit (2026-09-14, branch `claude/focused-goldberg-ccv53i`)
+
+Scheduled re-run. `main` had moved by exactly one commit since the 2026-09-11
+pass (`35b174f`, that pass's own doc entry, merged as `31bd486`) — no other
+code changed, so this is a genuine re-verification against the same
+application code, not a check against new behavior.
+
+`pip-audit --strict` re-run against both `requirements.txt` files with the
+exact CI invocation: **no known vulnerabilities** in either, both before and
+after this pass's one dependency change (below). `python -m compileall
+ace-laptimes/backend ace-tray` and `ruff check --select E9,F63,F7,F82,F401,
+F811,F841 --ignore E402` (the exact CI flags) both ran clean, before and
+after. The thumbnail-asset cross-check CI also runs (`app.js`'s
+`TRACK_THUMBS`/`CAR_THUMBS` tables against `assets/thumbs/*.svg`) passed too.
+
+Re-verified by reading the code directly, not by trusting the prior
+write-up:
+
+- All 45 `@app.route` declarations still carry an explicit auth decorator
+  (`token_required` / `token_or_key_required` / `superadmin_required`, or a
+  `@limiter.limit(...)` line ahead of one), except the same four
+  intentionally-public routes — re-derived programmatically this pass rather
+  than by eye: `/api/auth/register`, `/api/auth/login` (both rate-limited),
+  `GET /api/invites/<token>` (rate-limited), and `/api/health`.
+- `_visibility_clause` (`app.py:597`) / `_can_view_user` (`app.py:608`)
+  unchanged, still the gate every lap-data read (`get_laptimes`,
+  `leaderboard`, `personal_bests`, `progress`, `export_csv`, `export_json`)
+  goes through.
+- `clean_text(...)` still has 16 call sites, all covered by `FIELD_LIMITS`
+  (`app.py:526`); no free-text field added outside it.
+- `_csv_safe` still has 4 call sites (the CSV-export column writes) —
+  unchanged from prior passes.
+- `app.js` still has 38 `innerHTML` assignments against 64 `escapeHtml`
+  calls — the same counts as the 2026-09-11 pass, so no new unescaped write
+  was introduced. The one known non-issue (`app.js:397`, the avatar
+  `initial` from `.charAt(0)`) is at the same line, unchanged.
+- No CORS middleware or `Access-Control-Allow-*` header anywhere in
+  `app.py` or `ace-laptimes/nginx/nginx.conf` (grepped both).
+- `_load_secret_key` / `_REJECTED_SECRET_KEYS` (`app.py:33-62`) unchanged:
+  no fallback, same placeholder set, 32-character minimum still enforced.
+- Both Dockerfiles still drop to a non-root user for request-handling code:
+  backend via `gosu` to `app` in `docker-entrypoint.sh`, frontend via
+  `USER node`; `ace-laptimes/nginx/Dockerfile`'s comment explaining why its
+  master process alone stays root (binds port 80; workers already run as
+  the unprivileged `nginx` user) is unchanged. **No Docker daemon was
+  available in this pass** (confirmed unreachable), so this is inspection
+  of the Dockerfiles, not a build smoke-test — the same limitation every
+  prior pass has noted.
+- `nginx.conf`'s CSP (`$alt_csp`) is byte-for-byte unchanged: `script-src
+  'self'` with no `unsafe-inline`/`unsafe-eval`, `style-src 'self'
+  'unsafe-inline'`, `font-src 'self'`, `img-src 'self' data:`,
+  `frame-ancestors 'none'`, `object-src 'none'`. No live
+  `fonts.googleapis.com`/`fonts.gstatic.com` reference anywhere — the only
+  matches for those hostnames are comments in `index.html`, `Dockerfile` and
+  `nginx.conf` explaining the 2026-09-07 vendoring fix, not a `<link>` or
+  CSP allowance.
+- `.github/workflows/tray-release.yml` still has the split job structure
+  (`build`: `contents: read`, every PR; `release`: `contents: write`, gated
+  `if: startsWith(github.ref, 'refs/tags/v')`, `needs: build`). All three
+  workflow YAML files still parse.
+- `git log -p` / `-S` re-run across the full history (all 86 commits,
+  two more than the 2026-09-11 pass's 84 — both are the merge and doc commit
+  that landed that pass's own findings) for AWS-style keys, PEM headers,
+  hardcoded passwords/tokens, connection strings, and committed `.env`/key/
+  cert files — nothing found beyond the already-known rejected `SECRET_KEY`
+  placeholders and the `docs/UPGRADING.md` snippet that only names the env
+  var (`echo "SECRET_KEY=$(openssl rand -hex 32)" > .env`), not a value.
+  `.gitignore` still ignores `.env`/`.env.*` with the `!.env.example`
+  escape hatch.
+- No `AGENTS.md` or similar file anywhere in the repo (checked by filename
+  across the whole tree — the only `CLAUDE.md` is this one), and a keyword
+  scan (`ignore previous instructions`, `you are now`, `disregard prior`,
+  `system prompt`, `new instructions`) across `.py`/`.js`/`.md`/`.yml`/
+  `.html` files found nothing outside this file's own audit history
+  describing that check.
+
+**One fix this pass, Low/informational — same-major-line patch bump, no CVE
+yet in the audit databases.** `pip-audit` found `PyJWT==2.13.0` clean, same
+as every prior pass, but PyPI carries a newer `2.14.0` (released 2026-09-11,
+three days before this pass) whose changelog documents six security
+advisories fixed against the `2.13.0` line — none yet reflected in
+`pip-audit`'s database at the time of this scan, which is why the strict
+audit stayed green throughout. Read the advisory list before bumping rather
+than bumping on the version number alone: four are about HMAC key material
+being supplied as a JWK/JWKS/DER/PEM blob, one is about `PyJWKClient`
+following a redirect to an untrusted host, and one is about unbounded JWKS
+refreshes on an unknown key id — `app.py` uses none of that surface
+(`grep` for `PyJWK`/`JWKS` in `ace-laptimes/backend/app.py`: no matches; the
+only calls are `jwt.encode(...)` and `jwt.decode(token, ..., algorithms=
+["HS256"])` with a fixed, hardcoded algorithm allow-list). The remaining
+two — stricter enforcement of RFC 7515 Appendix F's detached/compact JWS
+encoding rules during decode — touch the decode path this app *does* use
+with attacker-supplied tokens, so this was bumped rather than left as a
+tracked item. Bumped to `2.14.0` in `ace-laptimes/backend/requirements.txt`.
+Verified drop-in: no `Changed` section in the 2.14.0 changelog (only
+`Security`/`Fixed`), and a manual `encode`/`decode` round-trip against the
+installed 2.14.0 package in this pass produced identical output to before,
+including the existing "wrong secret" rejection path. `pip-audit --strict`,
+`compileall`, and `ruff` all stayed clean after the bump (see above).
+
+No other findings this pass, Critical/High/Medium/Low. Both previously-open
+Low items are unchanged and were not touched, per this pass's scope:
+
+- **Low, open, unchanged** — actions pinned to mutable major tags rather
+  than commit SHAs, across every workflow file. Deliberate per
+  `dependabot.yml`.
+- **Low, open, unchanged** — tray API key persisted via `QSettings` (Windows
+  registry, plaintext); mitigated server-side by `scope='tray'` /
+  `_acting_as_superadmin`.
+
+Not re-litigated: the tray-version-vs-tag table under "Cutting a release" —
+this pass is not a release, so `ace_tray.py`, `README.md` and
+`TECHNICAL.md` were only checked for internal consistency (all three still
+agree, at `1.5.0`) and left alone, since this pass touches no tag.
