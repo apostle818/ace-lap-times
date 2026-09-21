@@ -625,3 +625,90 @@ Not re-litigated: the tray-version-vs-tag table under "Cutting a release" —
 this pass is not a release, so `ace_tray.py`, `README.md` and
 `TECHNICAL.md` were only checked for internal consistency (all three still
 agree, at `1.5.0`) and left alone, since this pass touches no tag.
+
+### Re-audit (2026-09-21, branch `claude/youthful-newton-8f70rj`)
+
+Scheduled re-run. `main` had moved by exactly one commit since the 2026-09-14
+pass (`910054c`, that pass's own PyJWT bump and doc entry, merged as
+`9e46b9d`) — no other code changed, so this is a genuine re-verification
+against the same application code, not a check against new behavior.
+
+`pip-audit --strict` re-run against both `requirements.txt` files with the
+exact CI invocation: **no known vulnerabilities** in either. Pins are
+unchanged from 2026-09-14 and every one of them is already the newest
+release available on PyPI as of this pass — checked each individually
+rather than assuming: `flask` 3.1.3, `flask-limiter` 4.1.1, `gunicorn`
+26.2.0, `bcrypt` 5.0.0, `PyJWT` 2.14.0 (backend); `PyQt6` 6.11.0, `requests`
+2.34.2 (tray). No bump made — there was nothing to bump. `python -m
+compileall ace-laptimes/backend ace-tray` and `ruff check --select
+E9,F63,F7,F82,F401,F811,F841 --ignore E402` (the exact CI flags) both ran
+clean.
+
+Re-verified by reading the code directly, not by trusting the prior
+write-up:
+
+- All 45 `@app.route` declarations still carry an explicit auth decorator
+  (`token_required` / `token_or_key_required` / `superadmin_required`, or a
+  `@limiter.limit(...)` line ahead of one) — re-derived programmatically
+  this pass (walked every route and everything decorating it) rather than by
+  eye, same four intentionally-public routes: `/api/auth/register` and
+  `/api/auth/login` (both rate-limited), `GET /api/invites/<token>`
+  (rate-limited), and `/api/health`.
+- `_visibility_clause` / `_can_view_user` (`app.py:597`/`608`) unchanged,
+  still the only path `get_laptimes`, `leaderboard`, `personal_bests`,
+  `progress`, `export_csv` and `export_json` read lap data through.
+- `clean_text(...)` still has 16 call sites, all covered by `FIELD_LIMITS`
+  (`app.py:526`); no free-text field added outside it.
+- `_csv_safe` (`app.py:1865`) still wraps every text column written in
+  `export_csv`.
+- `app.js` still has 38 `innerHTML` assignments against 64 `escapeHtml`
+  calls — the same counts as the 2026-09-11 and 2026-09-14 passes, so no
+  new unescaped write was introduced. The one known non-issue (`app.js:397`,
+  the avatar `initial` from `.charAt(0)`) is at the same line, unchanged.
+- No CORS middleware or `Access-Control-Allow-*` header anywhere in
+  `app.py` or `ace-laptimes/nginx/nginx.conf` (grepped both).
+- `_load_secret_key` / `_REJECTED_SECRET_KEYS` (`app.py:33-62`) unchanged:
+  no fallback, same placeholder set.
+- Both Dockerfiles still drop to a non-root user for request-handling code:
+  backend via `gosu` in `docker-entrypoint.sh`, frontend via `USER node`;
+  `ace-laptimes/nginx/Dockerfile`'s comment explaining why its master
+  process alone stays root is unchanged. **No Docker daemon was available in
+  this pass** (confirmed unreachable), so this is inspection of the
+  Dockerfiles, not a build smoke-test — the same limitation every prior pass
+  has noted.
+- `nginx.conf`'s CSP (`$alt_csp`) is byte-for-byte unchanged: `script-src
+  'self'` with no `unsafe-inline`/`unsafe-eval`, `style-src 'self'
+  'unsafe-inline'`, `font-src 'self'`, `img-src 'self' data:`, `frame-ancestors
+  'none'`, `object-src 'none'`.
+- `.github/workflows/tray-release.yml` still has the split job structure
+  (`build`: `contents: read`, every PR; `release`: `contents: write`, gated
+  `if: startsWith(github.ref, 'refs/tags/v')`, `needs: build`).
+- `git log -p` / `-S` re-run across the full history (all 88 commits, two
+  more than the 2026-09-14 pass's 86 — both are the merge and doc commit
+  that landed that pass's own PyJWT bump) for AWS-style keys, PEM headers,
+  hardcoded passwords/tokens, connection strings, and committed `.env`/key/
+  cert files — nothing found beyond the already-known rejected `SECRET_KEY`
+  placeholders. `.gitignore` still ignores `.env`/`.env.*` with the
+  `!.env.example` escape hatch.
+- No `AGENTS.md` or similar file anywhere in the repo (checked by filename
+  across the whole tree), and a keyword scan (`ignore previous instructions`,
+  `you are now`, `disregard prior`, `system prompt`, `new instructions`)
+  across `.py`/`.js`/`.md`/`.yml`/`.html` files found nothing outside this
+  file's own audit history describing that check.
+
+No new findings this pass, Critical/High/Medium/Low. No dependency change
+was needed — everything is already at its newest release with a clean
+`pip-audit`. Both previously-open Low items are unchanged and were not
+touched, per this pass's scope:
+
+- **Low, open, unchanged** — actions pinned to mutable major tags rather
+  than commit SHAs, across every workflow file. Deliberate per
+  `dependabot.yml`.
+- **Low, open, unchanged** — tray API key persisted via `QSettings` (Windows
+  registry, plaintext); mitigated server-side by `scope='tray'` /
+  `_acting_as_superadmin`.
+
+Not re-litigated: the tray-version-vs-tag table under "Cutting a release" —
+this pass is not a release, so `ace_tray.py`, `README.md` and
+`TECHNICAL.md` were only checked for internal consistency (all three still
+agree, at `1.5.0`) and left alone, since this pass touches no tag.
