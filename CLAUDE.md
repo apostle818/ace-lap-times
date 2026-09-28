@@ -712,3 +712,138 @@ Not re-litigated: the tray-version-vs-tag table under "Cutting a release" —
 this pass is not a release, so `ace_tray.py`, `README.md` and
 `TECHNICAL.md` were only checked for internal consistency (all three still
 agree, at `1.5.0`) and left alone, since this pass touches no tag.
+
+### Re-audit (2026-09-28, branch `claude/youthful-newton-65i9g2`)
+
+Scheduled fleet-wide re-run. `main` had not moved since the 2026-09-21 pass
+(this branch's `HEAD` is byte-identical to that pass's landing commit,
+`c0216aa`, 92 refs reachable — no new code commit, only the merges of
+`#29`/`#31` already counted at the previous pass), so this is a genuine
+re-verification against the same application code, not a check against new
+behavior, plus one dependency bump this pass made.
+
+**One fix this pass — `PyJWT` 2.14.0 → 2.15.0, a decode-path security
+release, reachable.** PyPI published `2.15.0` on 2026-09-23, two days after
+the last pass; `pip-audit --strict` stayed clean throughout (both before and
+after this bump — the advisory database has nothing against either pin), so
+this was read from the changelog, not from an audit finding, the same way
+the 2.14.0 bump was in the 2026-09-14 entry. Its `Security` section: "Wrap
+recursion errors from deeply nested JWT payloads in `DecodeError` instead of
+exposing a raw `RecursionError`." Checked reachability directly rather than
+bumping on the label alone: `app.py:401`'s `_parse_token()` calls
+`jwt.decode(token, app.config["SECRET_KEY"], algorithms=["HS256"])` on an
+attacker-supplied `Authorization` header, and its `except` clauses
+(`app.py:402-405`) catch only `jwt.ExpiredSignatureError` and
+`jwt.InvalidTokenError` — neither is a superclass of `RecursionError`, so a
+crafted deeply-nested token would have escaped both handlers as an unhandled
+exception under 2.14.0. Low severity (an unhandled-exception 500, not the
+RCE class of finding this repo has seen from `pdfjs-dist`/`react-router` in
+sibling audits), but squarely on the one path this app itself calls out as
+the trust boundary worth extra care (`jwt.encode(...)`/`jwt.decode(...)` are
+still the only two `jwt.*`/`PyJWK*` call sites in `app.py`, re-grepped).
+Bumped in `ace-laptimes/backend/requirements.txt`. Verified drop-in in a
+throwaway venv built from the pinned requirements: an `encode`/`decode`
+round-trip under the installed 2.15.0 produced the same payload back, and
+the "wrong secret" rejection path still raises `InvalidSignatureError`
+(a subclass of the `InvalidTokenError` `_parse_token` already catches).
+`ace-tray/requirements.txt` needed no change — `PyQt6` 6.11.0 and `requests`
+2.34.2 are still each the newest release in their line, confirmed against
+PyPI directly rather than assumed.
+
+Re-verified by reading the code directly, not by trusting the prior
+write-up:
+
+- All 45 `@app.route` declarations still carry an explicit auth decorator
+  — re-derived programmatically this pass (walked every route and every
+  decorator line above it, rather than eyeballing) and confirmed exactly one
+  route, `health`, carries neither an auth decorator nor a `@limiter.limit`;
+  the other three intentionally-public routes (`/api/auth/register`,
+  `/api/auth/login`, `GET /api/invites/<token>`) each still carry an
+  explicit `@limiter.limit(...)`, spot-checked by printing each one's full
+  decorator stack rather than trusting the count alone.
+- `_authenticate_api_key` (`app.py:327-345`) still compares against a
+  64-character dummy hash when the presented key id is unknown before
+  calling `hmac.compare_digest`, so a valid and an invalid key id cost the
+  same amount of work — unchanged.
+- `app.js` has 36 `.innerHTML` assignments against 64 `escapeHtml` calls —
+  read every `.innerHTML` line individually rather than trusting the count
+  from 2026-09-21 (which recorded 38): each one is still either a fixed
+  string, a full `render*Page()` call, a `btn.innerHTML` save/restore pair
+  around a loading spinner (`app.js:1717`/`1734`, never external data), or
+  wrapped in `escapeHtml`. The one known non-issue (`app.js:397`, the avatar
+  `initial` from `.charAt(0)?.toUpperCase()`) is at the same line, unchanged
+  and still a single character that cannot form a tag. No
+  `dangerouslySetInnerHTML`, `eval(`, `new Function`, or `document.write`
+  anywhere in `app.js` or `app.py` (grepped both).
+- No CORS middleware or `Access-Control-Allow-*` header anywhere in
+  `app.py` or `ace-laptimes/nginx/nginx.conf` (grepped both).
+- `_load_secret_key` / `_REJECTED_SECRET_KEYS` (`app.py:33-62`) unchanged:
+  no fallback, same seven-entry placeholder set, 32-character minimum still
+  enforced.
+- The Werkzeug debugger is still opt-in only: `app.py`'s
+  `if __name__ == "__main__":` block (`app.py:1933-1942`) reads `debug=`
+  from `FLASK_DEBUG` and is guarded so it never executes under the
+  production path — `ace-laptimes/backend/Dockerfile`'s `CMD` still runs
+  `gunicorn ... app:app`, never `python app.py` or `flask run`, confirmed by
+  reading the `CMD` line directly.
+- Both Dockerfiles still drop to a non-root user for request-handling code:
+  backend via `gosu` to `app` in `docker-entrypoint.sh`, frontend via
+  `USER node`. **No Docker daemon was available in this pass** (confirmed
+  unreachable), so this is inspection of the Dockerfiles, not a build
+  smoke-test — the same limitation every prior pass has noted.
+- `nginx.conf`'s CSP (`$alt_csp`) is byte-for-byte unchanged: `script-src
+  'self'` with no `unsafe-inline`/`unsafe-eval`, `style-src 'self'
+  'unsafe-inline'`, `font-src 'self'`, `img-src 'self' data:`,
+  `frame-ancestors 'none'`, `object-src 'none'`. Chart.js and the two vendored
+  Google fonts are still pulled into `vendor/` at build time
+  (`ace-laptimes/frontend/Dockerfile`), no live third-party origin.
+- `.github/workflows/tray-release.yml` still has the split job structure
+  (`build`: `windows-latest`, `contents: read`, runs on every PR; `release`:
+  `ubuntu-latest`, `contents: write`, gated
+  `if: startsWith(github.ref, 'refs/tags/v')`, `needs: build`). No new tag
+  landed since the 2026-09-21 pass (`v1.6.0` is still the newest on the
+  remote), so the tray-version-vs-tag table was not re-litigated, per the
+  same scoping every prior non-release pass has used.
+- `git log -p` / `-S` re-run across the full history (92 commits reachable
+  from all refs, four more than the 2026-09-21 pass's 88 — the four are the
+  merge of `#29` (a Dependabot Actions bump) and the merge/doc commit that
+  landed that pass's own findings) for AWS-style keys, PEM headers,
+  hardcoded `password=`/`secret_key=`/`api_key=`-shaped literals,
+  connection strings, and `.env`/key/cert file additions — nothing found
+  beyond the already-known rejected `SECRET_KEY` placeholders in
+  `_REJECTED_SECRET_KEYS`. `git log --all --diff-filter=A --name-only`
+  grepped for `.env`/key/cert extensions still turns up nothing — no such
+  file has ever been added on any branch.
+- No `AGENTS.md` or similarly-named file anywhere in the repo (checked by
+  filename across the whole tree), and a keyword scan (`ignore previous
+  instructions`, `disregard prior`, `you are now`, `system prompt`, `new
+  instructions`) across `.py`/`.js`/`.md`/`.yml`/`.html` files found nothing
+  outside this file's own audit history describing that check. No suspected
+  prompt-injection content found.
+
+No new findings this pass beyond the PyJWT bump above, Critical/High/Medium/
+Low. Both previously-open Low items are unchanged and were not touched, per
+this pass's scope — no concrete, narrow, safe fix presented itself for
+either:
+
+- **Low, open, unchanged** — actions pinned to mutable major tags rather
+  than commit SHAs, across every workflow file. Deliberate per
+  `dependabot.yml`.
+- **Low, open, unchanged** — tray API key persisted via `QSettings` (Windows
+  registry, plaintext); mitigated server-side by `scope='tray'` /
+  `_acting_as_superadmin`.
+
+**Checks run this pass**, all against the exact CI invocation in
+`.github/workflows/ci.yml`: `pip-audit --strict -r
+ace-laptimes/backend/requirements.txt` and `-r ace-tray/requirements.txt`
+(clean before the bump, clean after); `python -m compileall -q
+ace-laptimes/backend ace-tray`; `ruff check --select E9,F63,F7,F82,F401,
+F811,F841 --ignore E402 ace-laptimes/backend ace-tray`; and the thumbnail
+asset cross-check between `app.js`'s lookup tables and
+`ace-laptimes/frontend/assets/thumbs/*.svg` — all four green, before and
+after the `PyJWT` bump. There is still no pytest/unittest suite in this repo
+(`ci.yml`'s own header comment: "There is no test suite yet"), so these four
+checks are the complete automated floor. No Docker daemon and no browser
+were available in this pass, matching every prior pass's noted limitation —
+the CSP, the Dockerfiles' `USER` directives and the debug-mode guard were
+all verified by reading the code, not by a live build or a page load.
