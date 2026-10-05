@@ -847,3 +847,32 @@ checks are the complete automated floor. No Docker daemon and no browser
 were available in this pass, matching every prior pass's noted limitation —
 the CSP, the Dockerfiles' `USER` directives and the debug-mode guard were
 all verified by reading the code, not by a live build or a page load.
+
+### Re-audit (2026-10-05, branch `claude/youthful-newton-7pbbmv`)
+
+Scheduled fleet-wide re-run. `main` had not moved since the 2026-09-28 pass
+(`c385305`, 99 commits reachable from all refs), so this is a re-verification
+of unchanged application code. Documentation-only: no code or dependency
+change was made.
+
+- `pip-audit --strict` on both `requirements.txt` files (exact CI invocation):
+  **no known vulnerabilities**. `python -m compileall` and `ruff check` with
+  the CI flags: clean.
+- Newer releases checked against PyPI per pin: `flask` 3.1.3, `flask-limiter`
+  4.1.1, `gunicorn` 26.2.0, `bcrypt` 5.0.0, `PyQt6` 6.11.0 and `requests`
+  2.34.2 are each still the newest release. **`PyJWT` 2.15.1 exists** (pinned:
+  2.15.0); its changelog was read and lists a single `Fixed` entry (accepting
+  trailing Base64URL `=` padding when decoding JWS segments) and no `Security`
+  section, so it was not bumped. Dependabot will offer it as a normal review.
+- `git log -p --all` for AWS keys, PEM headers, `ghp_`/`sk-`/`xox` tokens: no
+  hits. No `.env`/`.pem`/`.key` file was ever added on any branch.
+- Config re-read: no CORS layer in `app.py`; `app.run(debug=...)` sits only in
+  the `__main__` block, defaults to loopback, and production runs gunicorn;
+  `_load_secret_key` unchanged. Both Low items from earlier passes (actions on
+  mutable major tags, tray API key in `QSettings`) are unchanged and still open.
+- No `AGENTS.md` or similar file. A keyword scan only matched this file's own
+  audit history describing that check.
+- Not run: Docker build and browser checks (no daemon or browser available);
+  there is still no pytest/unittest suite in this repo.
+
+No new findings, no regressions.
