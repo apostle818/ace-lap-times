@@ -876,3 +876,37 @@ change was made.
   there is still no pytest/unittest suite in this repo.
 
 No new findings, no regressions.
+
+### Re-audit (2026-10-12, branch `claude/youthful-newton-tnj0xh`)
+
+Scheduled fleet-wide re-run. `main` (`4b29659`, 101 commits reachable from all
+refs) had moved only by the 2026-10-05 doc entry and its merge, so this is a
+re-verification of unchanged application code. Documentation-only: no code or
+dependency change was made.
+
+- `pip-audit --strict` on both `requirements.txt` files (CI invocation): **no
+  known vulnerabilities**. `python -m compileall`, `ruff check` with the CI
+  flags, and the thumbnail cross-check (15 slugs, none missing or orphaned): clean.
+- PyPI per pin: `flask` 3.1.3, `flask-limiter` 4.1.1, `gunicorn` 26.2.0,
+  `bcrypt` 5.0.0, `PyQt6` 6.11.0 and `requests` 2.34.2 are each still the newest
+  release. `PyJWT` 2.15.1 (2026-09-28, `Fixed`-only, read on 2026-10-05) is
+  still the newest; nothing with a `Security` section has been published since,
+  so the 2.15.0 pin stays and Dependabot will offer 2.15.1 as a normal review.
+- `git log -p --all` for AWS keys, PEM headers, `ghp_`/`xox`/`sk-`/`AIza`
+  tokens and secret-shaped literals: no hits. No `.env`/`.pem`/`.key` file was
+  ever added on any branch.
+- Re-derived in code: all 45 `@app.route` declarations carry an auth decorator
+  except the four intentionally public ones (register and login rate-limited,
+  `GET /api/invites/<token>` rate-limited, `/api/health`); `add_group_member`
+  is still `@superadmin_required`; no CORS layer in `app.py` or `nginx.conf`;
+  `debug=` only in the `__main__` block, production runs gunicorn; backend
+  drops to `app` via `gosu`, frontend `USER node`; CSP unchanged; only the two
+  entrypoint/build scripts carry the executable bit. `app.js` has 35
+  `.innerHTML` assignments against 64 `escapeHtml` calls (36 recorded on
+  2026-09-28, counted by a different pattern; no new unescaped write).
+- No `AGENTS.md` or similar file; the keyword scan found nothing outside this
+  file's own audit history.
+- Both Low items (actions on mutable major tags, tray API key in `QSettings`)
+  are unchanged and still open. Not run: Docker build and browser checks.
+
+No new findings, no regressions.
