@@ -40,9 +40,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
           cache: pip
@@ -55,14 +55,26 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller==6.11.1
 
+      # keyring finds its backends through package entry points, so a bundle
+      # without keyring's metadata silently falls back to storing the API key
+      # in the registry. Fail here instead, on the same Windows runner.
+      - name: Check credential store backend
+        shell: bash
+        run: |
+          python -c "import keyring; from keyring.backends.Windows import WinVaultKeyring as W; k = keyring.get_keyring(); print(k); assert isinstance(k, W), k"
+
       # The tray icon is drawn at runtime with QPainter (create_app_icon in
       # ace_tray.py), so there are no data files to bundle - just the script.
+      # The keyring flags carry the metadata and Windows backend the check
+      # above relies on into the exe.
       - name: Build executable
         working-directory: ace-tray
         run: |
           pyinstaller --onefile --windowed `
             --name ACELapTracker `
             --hidden-import PyQt6.QtSvg `
+            --copy-metadata keyring `
+            --hidden-import keyring.backends.Windows `
             ace_tray.py
 
       - name: Smoke-test the executable
@@ -93,7 +105,7 @@ jobs:
             echo "Version matches: ${app}"
           fi
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ACELapTracker-exe
           path: ace-tray/dist/ACELapTracker.exe
@@ -110,7 +122,7 @@ jobs:
     permissions:
       contents: write   # needed to attach the exe to a release
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ACELapTracker-exe
           path: dist

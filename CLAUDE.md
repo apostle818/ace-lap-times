@@ -105,15 +105,17 @@ groups-as-privacy-boundary, CSV injection, strict CSP, non-root containers,
 
 ### Tray app (`ace-tray/ace_tray.py`)
 
-- The API key and server URL are persisted via `QSettings`, which on
-  Windows lands in the registry **in plaintext**, not an OS credential
-  store. This is a deliberate simplicity tradeoff for a homelab tool and is
-  partly mitigated server-side (a tray API key is pinned to `scope='tray'`
-  and can never carry admin rights, however privileged the account —
-  see `_acting_as_superadmin` in `app.py`). Don't make it worse: never add a
-  second, higher-privilege credential type stored the same way. If this
-  needs hardening later, look at Windows Credential Manager via `keyring`
-  before rolling anything custom.
+- The API key lives in Windows Credential Manager via `keyring`
+  (`_load_api_key` / `_save_api_key` in `ace_tray.py`); everything else,
+  server URL included, stays in `QSettings` (the registry, plaintext). A key
+  left in `QSettings` by an older build is moved across on first start. The
+  registry is only a fallback when no credential store works, and the app
+  logs it when that happens. Credential Manager stops a registry export or
+  another Windows account reading the key, not malware running as the same
+  user, so the server-side bound still matters: a tray API key is pinned to
+  `scope='tray'` and can never carry admin rights (`_acting_as_superadmin`
+  in `app.py`). Never add a second, higher-privilege credential type to the
+  tray, and never write a secret to `QSettings` directly.
 
 ### Cutting a release — bump the tray every time
 
@@ -964,3 +966,21 @@ dependency change was made.
   and browser checks; there is still no pytest/unittest suite in this repo.
 
 No new findings, no regressions.
+
+### Fix pass (2026-10-26, branch `claude/great-maxwell-gtkz95`)
+
+Closes both Low items every pass since 2026-09-05 carried as open.
+
+- **Low, fixed** — actions pinned to mutable major tags. Every `uses:` in all
+  three workflows is now a full commit SHA with the release as a trailing
+  `# vX.Y.Z` comment, each resolved with `git ls-remote` against the tag the
+  workflow already used (all lightweight tags, so no peeling needed).
+  `dependabot.yml`'s comment is updated; Dependabot bumps SHA and comment
+  together, so updates stay a normal review.
+- **Low, fixed** — tray API key in the registry in plaintext. Moved to
+  Windows Credential Manager via `keyring==25.7.0` (newest, `pip-audit
+  --strict` clean). Migration and fallback paths were run against real
+  `QSettings` and a fake keyring (7 cases). `tray-release.yml` bundles
+  keyring's metadata and Windows backend and checks on the Windows runner
+  that the Windows backend resolves. **Not verified in a real `.exe` on
+  Windows** — do that by hand before the next release.

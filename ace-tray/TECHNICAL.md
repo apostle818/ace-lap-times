@@ -27,6 +27,7 @@ The app runs entirely on the local Windows machine. It has no server component o
 | HTTP client | requests 2.31+ |
 | Log monitoring | Python file tail loop (2s interval) |
 | Config storage | `QSettings` — Windows registry, per Windows user account |
+| Secret storage | `keyring` — Windows Credential Manager, for the API key only |
 | Packaging | Python venv + `start.bat` launcher |
 
 ---
@@ -61,7 +62,7 @@ each account connects with its own API key and tracks separately.
 | Key | Written by | Holds |
 |-----|-----------|-------|
 | `server_url` | Connect | Base URL of the backend |
-| `api_key` | Connect | The `alt_...` key, the only long-lived secret on disk |
+| `api_key` | Connect, only as a fallback | See *API key storage* below; normally absent |
 | `username` | Connect | Echoed back from the server, for display |
 | `display_name` | Connect | Echoed back from the server, for display |
 | `user_id` | Connect | The account the key belongs to; recovered from `/api/auth/me` if missing |
@@ -75,6 +76,25 @@ are exchanged for an API key and discarded in memory; only the key is stored.
 A `token` key from a pre-API-key build is deleted on sight — see
 `_migrate_legacy_token()`, which trades a still-valid JWT for a key once and
 then removes it.
+
+### API key storage
+
+The `alt_...` key is the only long-lived secret the app keeps, and it does not
+go in the registry. `_save_api_key()` hands it to `keyring`, which on Windows
+writes a generic credential to **Windows Credential Manager** (service
+`ACELaps/ACE Lap Tracker`, user `api_key`). That store is encrypted with DPAPI
+under the Windows account's own login, so a registry export, a backup of the
+profile, or another Windows account on the same PC no longer yields the key in
+plaintext. It does not stop malware already running as the same Windows user,
+which can ask Credential Manager for it like the app does — the server-side
+`scope='tray'` pin is what bounds the damage there.
+
+Upgrading from a build that kept the key in `QSettings` needs nothing:
+`_load_api_key()` moves it into Credential Manager on first start and deletes
+the registry value, but only after the store has accepted it. If no usable
+credential store exists (keyring missing from a hand-built venv, or a broken
+backend), the app keeps the key in `QSettings` as before and says so in the
+activity log rather than losing the connection.
 
 Because this is the registry and not a file, there is nothing to copy between
 machines: to move a setup, create a new key on the website and paste it in.

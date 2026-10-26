@@ -77,7 +77,8 @@ else, and you can revoke it from the website without changing your password.
 
 If other people use this PC with their own Windows accounts, they should repeat
 this step while logged in as themselves, with their own key. Settings live in
-the registry under `HKCU`, so each Windows account is independent.
+the registry under `HKCU` and the API key in Windows Credential Manager, both
+per Windows account, so each account is independent.
 
 ### 4. Auto-start (Optional)
 
