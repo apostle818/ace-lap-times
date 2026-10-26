@@ -20,8 +20,10 @@ updates:
     commit-message:
       prefix: "deps(tray)"
 
-  # Actions are pinned to major tags, so this catches a v4 -> v5 move that
-  # would otherwise go unnoticed until something breaks.
+  # Actions are pinned to full commit SHAs (with the release as a trailing
+  # `# vX.Y.Z` comment), so a moved or hijacked tag upstream cannot change
+  # what runs here. Dependabot understands that format: it bumps the SHA and
+  # rewrites the comment in the same PR, so a new release is still a review.
   - package-ecosystem: github-actions
     directory: /
     schedule:

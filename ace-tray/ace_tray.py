@@ -33,11 +33,21 @@ from PyQt6.QtGui import (
 
 import requests
 
+try:
+    import keyring
+except ImportError:  # running from an older venv without the new dependency
+    keyring = None
+
 # ─── Constants ───────────────────────────────────────────────────────
 
 APP_NAME = "ACE Lap Tracker"
 APP_VERSION = "1.5.0"
 ORG_NAME = "ACELaps"
+
+# The API key goes to the OS credential store (Windows Credential Manager),
+# not QSettings, which on Windows is the registry in plaintext.
+KEYRING_SERVICE = f"{ORG_NAME}/{APP_NAME}"
+KEYRING_USER = "api_key"
 
 WEATHER_OPTIONS = ["Clear", "Cloudy", "Light Rain", "Heavy Rain", "Fog", "Snow", "Storm", "Dynamic"]
 
@@ -863,7 +873,8 @@ class MainWindow(QMainWindow):
 
         # Restore saved credentials
         saved_url = self.settings.value("server_url", "")
-        saved_key = self.settings.value("api_key", "")
+        self._key_in_registry = False
+        saved_key = self._load_api_key()
         if saved_url and saved_key:
             self.api.configure(saved_url, saved_key)
         elif saved_url:
@@ -872,6 +883,8 @@ class MainWindow(QMainWindow):
             self._migrate_legacy_token(saved_url)
 
         self._build_ui()
+        if self._key_in_registry:
+            self._log("No usable credential store - API key kept in the registry")
         self._setup_tray()
         self._start_watcher()
 
@@ -1080,7 +1093,7 @@ class MainWindow(QMainWindow):
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_input.setPlaceholderText("alt_...  (create one on the website)")
-        self.api_key_input.setText(self.settings.value("api_key", ""))
+        self.api_key_input.setText(self.api.api_key)
         server_form.addRow("API Key:", self.api_key_input)
 
         key_hint = QLabel(
@@ -1342,6 +1355,45 @@ class MainWindow(QMainWindow):
             f"color: {colour}; font-size: 12px; font-weight: 600;"
         )
 
+    def _load_api_key(self) -> str:
+        """
+        Read the API key from the credential store. A key still sitting in
+        QSettings from an older build is moved across and then deleted there,
+        but only once the store has accepted it - a failed move keeps working
+        off the registry copy rather than losing the connection.
+        """
+        legacy = self.settings.value("api_key", "")
+        if keyring is None:
+            self._key_in_registry = bool(legacy)
+            return legacy
+        try:
+            stored = keyring.get_password(KEYRING_SERVICE, KEYRING_USER)
+            if not stored and legacy:
+                keyring.set_password(KEYRING_SERVICE, KEYRING_USER, legacy)
+                stored = legacy
+                logger.info("Moved API key from the registry to the credential store")
+        except Exception as e:
+            logger.warning(f"Credential store unavailable: {e}")
+            self._key_in_registry = bool(legacy)
+            return legacy
+        if legacy:
+            self.settings.remove("api_key")
+        return stored or ""
+
+    def _save_api_key(self, api_key: str):
+        """Store the key in the credential store, falling back to QSettings
+        only when there is no usable store at all."""
+        if keyring is not None:
+            try:
+                keyring.set_password(KEYRING_SERVICE, KEYRING_USER, api_key)
+                self.settings.remove("api_key")
+                self._key_in_registry = False
+                return
+            except Exception as e:
+                logger.warning(f"Credential store unavailable: {e}")
+        self.settings.setValue("api_key", api_key)
+        self._key_in_registry = True
+
     def _migrate_legacy_token(self, saved_url: str):
         """
         One-time upgrade path. Older builds stored a 30-day JWT; if one is
@@ -1370,7 +1422,7 @@ class MainWindow(QMainWindow):
             return
 
         self.api.configure(saved_url, api_key)
-        self.settings.setValue("api_key", api_key)
+        self._save_api_key(api_key)
         self.settings.remove("token")
         self._log("Upgraded saved login to an API key - your password is no longer needed")
 
@@ -1405,7 +1457,9 @@ class MainWindow(QMainWindow):
             # Only the API key is persisted - never the password.
             self.settings.setValue("server_url", url)
             self.settings.setValue("username", data.get("username", username))
-            self.settings.setValue("api_key", self.api.api_key)
+            self._save_api_key(self.api.api_key)
+            if self._key_in_registry:
+                self._log("No usable credential store - API key kept in the registry")
             self.settings.setValue("display_name", display_name)
             self.settings.remove("token")  # drop any legacy JWT from an older version
 
