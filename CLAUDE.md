@@ -984,3 +984,30 @@ Closes both Low items every pass since 2026-09-05 carried as open.
   keyring's metadata and Windows backend and checks on the Windows runner
   that the Windows backend resolves. **Not verified in a real `.exe` on
   Windows** — do that by hand before the next release.
+
+### Re-audit (2026-11-02, branch `claude/youthful-newton-pz7n9g`)
+
+Scheduled fleet-wide re-run. `main` (`75df36a`, 106 commits reachable from all
+refs) had moved only by the 2026-10-26 fix pass (#38), so this is a
+re-verification of unchanged application code. Documentation-only: no code or
+dependency change was made.
+
+- `pip-audit --strict` on both `requirements.txt` files (CI invocation): **no
+  known vulnerabilities**. `python -m compileall` and `ruff check` with the CI
+  flags: clean.
+- PyPI per pin: `flask` 3.1.3, `flask-limiter` 4.1.1, `gunicorn` 26.2.0,
+  `bcrypt` 5.0.0, `requests` 2.34.2 and `keyring` 25.7.0 are each still the
+  newest release. `PyJWT` 2.15.1 (`Fixed`-only, read on 2026-10-05) is still
+  the newest; the 2.15.0 pin stays. `PyQt6` 6.12.0 exists (pinned 6.11.0, a
+  minor); no advisory in `pip-audit`, and PyPI changelogs were not reachable
+  from this sandbox, so it was not bumped. Dependabot offers both as normal reviews.
+- `git log -p --all` for AWS keys, PEM headers, `ghp_`/`sk-ant`/`xox`/`AIza`
+  tokens: no hits (only this file's own audit text). No `.env`/`.pem`/`.key`
+  file was ever added on any branch.
+- Config re-read: no CORS layer in `app.py` or `nginx.conf`; backend drops via
+  `gosu`, frontend `USER node`, nginx master root by design (see its Dockerfile).
+- No `AGENTS.md` or similar file; the keyword scan found nothing outside this
+  file's own audit history. Not run: Docker build and browser checks; there is
+  still no pytest/unittest suite in this repo.
+
+No new findings, no regressions.
