@@ -1011,3 +1011,27 @@ dependency change was made.
   still no pytest/unittest suite in this repo.
 
 No new findings, no regressions.
+
+### Re-audit (2026-11-09, branch `claude/youthful-newton-s221dt`)
+
+Scheduled fleet-wide re-run. `main` (`191e7ba`, 108 commits reachable from all
+refs) had moved only by the 2026-11-02 doc entry and its merge, so this is a
+re-verification of unchanged application code. Documentation-only: no code or
+dependency change was made.
+
+- `pip-audit --strict` on both `requirements.txt` files: **no known
+  vulnerabilities**.
+- PyPI per pin: `flask`, `flask-limiter`, `gunicorn`, `bcrypt`, `requests` and
+  `keyring` are each still the newest release. `PyJWT` 2.15.1 and `PyQt6`
+  6.12.0 are still the only newer ones (same as 2026-11-02; no advisory in
+  `pip-audit`, changelogs not re-read); pins stay, Dependabot offers them.
+- `git log -p --all` for AWS keys, PEM headers, `ghp_`/`sk-ant`/`xox`/`AIza`
+  tokens: only this file's own audit text. No `.env`/`.pem`/`.key` file was
+  ever added on any branch.
+- Config re-read: no CORS layer in `app.py` or `nginx.conf`; backend drops to
+  `app` via `gosu`, frontend `USER node`.
+- No `AGENTS.md` or similar file; the keyword scan found nothing outside this
+  file's own audit history. Not run: Docker build and browser checks; there is
+  still no pytest/unittest suite in this repo.
+
+No new findings, no regressions.
