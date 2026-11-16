@@ -1035,3 +1035,44 @@ dependency change was made.
   still no pytest/unittest suite in this repo.
 
 No new findings, no regressions.
+
+### Re-audit (2026-11-16, branch `claude/youthful-newton-d44rjm`)
+
+Scheduled fleet-wide re-run. `main` (`99198b6`, 111 commits reachable from all
+refs) had moved only by the 2026-11-09 doc entry and its merge, so this is a
+re-verification of unchanged application code. Documentation-only: no code or
+dependency change was made.
+
+- `pip-audit --strict` on both `requirements.txt` files: **no known
+  vulnerabilities**. `python -m compileall`, `ruff check` (0.8.4, CI flags),
+  the thumbnail cross-check (15 referenced, all present) and the workflow YAML
+  parse: clean.
+- PyPI per pin: `flask`, `flask-limiter`, `bcrypt`, `requests` and `keyring`
+  are each still the newest release; transitive `Werkzeug` resolves to 3.1.9.
+  `PyJWT` 2.15.1 is unchanged (`Fixed`-only); pin stays. `PyQt6` 6.12.1 is out
+  (pinned 6.11.0); the `NEWS` in both the 6.12.0 and 6.12.1 sdists was read and
+  lists features and build fixes only, nothing security-related, so it was not
+  bumped.
+- **Recommendation, needs a human decision — `gunicorn` 26.2.0 → 27.x.** 27.0.0
+  (2026-11-10) and 27.0.1 exist; the sdist changelog (`docs/content/news.md`)
+  has no `Security` heading and `pip-audit` flags nothing, but 27.0.0 is a
+  batch of HTTP/1.1 parser hardening squarely in the request-smuggling class:
+  it rejects a `Transfer-Encoding` not ending in `chunked` (the sync worker
+  used to read such a body until close), whitespace before the header colon,
+  non-digit `Content-Length`, chunk data without CRLF, and control or raw
+  non-ASCII bytes in the path. Mitigated here because nginx sits in front and
+  re-frames requests, but worth taking. Not bumped inline: it is a major with
+  a listed breaking change (400 on `Transfer-Encoding: identity`), and no
+  Docker daemon was available to smoke-test the image. The open Dependabot PR
+  (27.0.0) is the review; prefer 27.0.1.
+- `git log -p --all` for AWS keys, PEM headers, `ghp_`/`sk-ant`/`xox`/`AIza`
+  tokens: no hits. No `.env`/`.pem`/`.key` file was ever added on any branch.
+- Config re-read: no CORS layer in `app.py` or `nginx.conf`; `debug=` only in
+  the `__main__` block, production runs gunicorn; backend drops to `app` via
+  `gosu`, frontend `USER node`; only the two shell scripts carry the
+  executable bit.
+- No `AGENTS.md` or similar file; the keyword scan found nothing outside this
+  file's own audit history. Not run: Docker build and browser checks; there is
+  still no pytest/unittest suite in this repo.
+
+No new findings beyond the gunicorn recommendation, no regressions.
