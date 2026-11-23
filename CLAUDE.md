@@ -1076,3 +1076,55 @@ dependency change was made.
   still no pytest/unittest suite in this repo.
 
 No new findings beyond the gunicorn recommendation, no regressions.
+
+### Re-audit (2026-11-23, branch `claude/youthful-newton-dxiya7`)
+
+Scheduled fleet-wide re-run. `main` (`0fdb107`, 104 commits in this clone)
+had moved by the 2026-11-16 doc entry and by #42, which adds
+`ace-tray/tools/shm_probe.py`, `ace-tray/tools/README.md` and
+`docs/TELEMETRY.md` (the telemetry phase 0 spike). No application code in
+`app.py`, `app.js`, `nginx.conf` or either Dockerfile changed.
+Documentation-only: no code or dependency change was made.
+
+- `pip-audit --strict` on both `requirements.txt` files: **no known
+  vulnerabilities**. `python -m compileall`, `ruff check` (CI flags), the
+  thumbnail cross-check (15 referenced, all present) and the workflow YAML
+  parse: clean.
+- PyPI per pin: `flask` 3.1.3, `flask-limiter` 4.1.1, `bcrypt` 5.0.0,
+  `requests` 2.34.2 and `keyring` 25.7.0 are each still the newest release;
+  `Werkzeug` resolves to 3.1.9, the newest. Newer than the pins, unchanged
+  since 2026-11-16: `PyJWT` 2.15.1 (`Fixed`-only), `PyQt6` 6.12.1 (`NEWS`
+  read on 2026-11-16, no security content) and `gunicorn` 27.0.1. Nothing new
+  was published for any pinned package this week, so no changelog needed
+  re-reading.
+- **Still a human decision — `gunicorn` 26.2.0 → 27.0.1.** Not merged:
+  `main` still pins 26.2.0. Dependabot has replaced its 27.0.0 PR with #48
+  (27.0.1), which is the version the 2026-11-16 entry recommended. The
+  reasoning there (HTTP/1.1 parser hardening in the request-smuggling class,
+  mitigated by nginx in front; a major with a listed breaking change on
+  `Transfer-Encoding: identity`) is unchanged, and no Docker daemon was
+  available here either to smoke-test the image. Reviewing and merging #48 is
+  the action. The other open Dependabot PRs (#47 PyQt6, #33 PyJWT, #43
+  `docker/login-action`, #45 Python 3.15 base image) carry no advisory.
+- **`shm_probe.py` read, not assumed.** Stdlib only (`ctypes`, `argparse`,
+  `csv`), opens ACE's shared-memory pages with `FILE_MAP_READ` only, writes a
+  local CSV of numeric samples to a user-chosen path, makes no network call,
+  and is not bundled into the tray exe (`tray-release.yml` builds only
+  `ace_tray.py`). It adds no dependency and no server-side surface. If the
+  telemetry work later uploads traces, that route needs the usual
+  decorator, `FIELD_LIMITS` and visibility-helper review.
+- Re-derived in code: 45 `@app.route` declarations, all with an auth
+  decorator except the four intentionally public ones (register, login and
+  `GET /api/invites/<token>` rate-limited; `/api/health`). No CORS layer in
+  `app.py` or `nginx.conf`; CSP unchanged (`script-src 'self'`,
+  `frame-ancestors 'none'`, `object-src 'none'`); `debug=` only in the
+  `__main__` block, production runs gunicorn; backend drops to `app` via
+  `gosu`, frontend `USER node`; only the two shell scripts carry the
+  executable bit. Every `uses:` in the three workflows is still a full SHA.
+- `git log -p --all` for PEM headers, AWS keys, `ghp_`/`sk-ant`/`xox`/`AIza`
+  tokens: no hits. No `.env`/`.pem`/`.key` file was ever added on any branch.
+- No `AGENTS.md` or similar file; the keyword scan found nothing outside this
+  file's own audit history. Not run: Docker build and browser checks; there
+  is still no pytest/unittest suite in this repo.
+
+No new findings, no regressions. The gunicorn recommendation stays open.
